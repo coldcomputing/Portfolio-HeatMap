@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Investment Heatmap Tracker</title>
+    <!-- Plotly.js CDN -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <!-- Supabase JS CDN (UMD Bundle) -->
+    <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background: #0f172a; color: #f8fafc; }
+        .container { max-width: 1100px; margin: 0 auto; }
+        .card { background: #1e293b; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #334155; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 15px; }
+        label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 4px; }
+        input, select, button { width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; box-sizing: border-box; }
+        button { background: #2563eb; color: white; font-weight: bold; cursor: pointer; border: none; margin-top: 10px; }
+        button:hover { background: #1d4ed8; }
+        .hidden { display: none; }
+        #heatmap { width: 100%; height: 500px; border-radius: 8px; overflow: hidden; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #334155; }
+        .auth-bar { display: flex; justify-content: space-between; align-items: center; background: #0f172a; padding: 10px 15px; border-radius: 6px; border: 1px solid #334155; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>📊 Portfolio Heatmap Tracker</h1>
+
+    <!-- Auth Header Bar -->
+    <div class="auth-bar">
+        <div id="userInfo">🔐 Status: Not logged in (Saving locally)</div>
+        <div id="authControls" style="display: flex; gap: 8px; width: auto;">
+            <input type="email" id="authEmail" placeholder="Email for cloud sync" style="width: 220px; padding: 6px 10px;">
+            <input type="password" id="authPassword" placeholder="Password" style="width: 140px; padding: 6px 10px;">
+            <button onclick="handleLogin()" style="width: auto; margin: 0; padding: 6px 12px; background: #10b981;">Log In / Sign Up</button>
+            <button id="logoutBtn" onclick="handleLogout()" class="hidden" style="width: auto; margin: 0; padding: 6px 12px; background: #ef4444;">Log Out</button>
+        </div>
+    </div>
+
+    <!-- Input Form -->
+    <div class="card">
+        <h3 id="formTitle">Add Investment Account / Holding</h3>
+        <div class="grid">
+            <div>
+                <label for="accountType">Account Type</label>
+                <select id="accountType" onchange="toggleFields()">
+                    <option value="stock">Stock Holding</option>
+                    <option value="retirement">Lump Sum Retirement</option>
+                    <option value="cash">Cash / Liquid Savings</option>
+                </select>
+            </div>
+            <div>
+                <label for="accountName">Account/Asset Name</label>
+                <input type="text" id="accountName" placeholder="e.g. Roth IRA, Tech Portfolio, Emergency Fund">
+            </div>
+            <div id="stockFields">
+                <label for="symbol">Stock Symbol</label>
+                <input type="text" id="symbol" placeholder="e.g. AAPL, MSFT">
+                <label for="shares" style="margin-top: 8px;">Number of Shares</label>
+                <input type="number" id="shares" placeholder="e.g. 10">
+            </div>
+            <div id="retirementFields" class="hidden">
+                <label for="currentValue">Current Total Value ($)</label>
+                <input type="number" id="currentValue" placeholder="e.g. 50000">
+            </div>
+        </div>
+        <div style="display: flex; gap: 10px;">
+            <button id="submitBtn" onclick="handleFormSubmit()">Add Entry</button>
+            <button id="cancelBtn" onclick="cancelEdit()" class="hidden" style="background: #64748b;">Cancel</button>
+        </div>
+    </div>
+
+    <!-- Heatmap Output -->
+    <div class="card">
+        <h3>Portfolio Heatmap</h3>
+        
+        <!-- Summary Stat Bar -->
+        <div id="portfolioSummary" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px;"></div>
+
+        <div id="heatmap"></div>
+    </div>
+
+    <!-- Holdings Table -->
+    <div class="card">
+        <h3>Holdings Summary</h3>
+        <table id="holdingsTable">
+            <thead>
+                <tr>
+                    <th>Account / Name</th>
+                    <th>Type</th>
+                    <th>Detail</th>
+                    <th>Calculated Value ($)</th>
+                    <th>Last Updated</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+// 1. CONSTANTS & CREDENTIALS
+const SUPABASE_URL = 'https://axxupkvohtvztezkhfcu.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_fWd6AHYNhR7oOAQ5OnHV5A_MpgLKdP3';
+const FINNHUB_API_KEY = 'd9nv2f9r01qqbd5s8ptgd9nv2f9r01qqbd5s8pu0'; 
+const CACHE_DURATION_MS = 5 * 60 * 1000; 
+
+// 2. INITIALIZE CLIENTS
+let supabaseClient = null;
+try {
+    if (window.supabase && window.supabase.createClient) {
+        supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    }
+} catch (err) {
+    console.error('Error initializing Supabase client:', err);
+}
+
+// 3. STATE VARIABLES
+let holdings = JSON.parse(localStorage.getItem('portfolio_holdings')) || [];
+let editingId = null;
+let currentUser = null;
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// --- SUPABASE AUTH & DATA SYNC ---
+
+async function checkUserSession() {
+    if (!supabaseClient) return;
+    try {
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        if (session) {
+            currentUser = session.user;
+            updateUIForUser();
+            await loadHoldingsFromSupabase();
+        }
+    } catch (e) {
+        console.error('Session check failed:', e);
+    }
+}
+
+async function handleLogin() {
+    if (!supabaseClient) {
+        alert('Supabase client failed to initialize. Please check network connection.');
+        return;
+    }
+
+    const email = document.getElementById('authEmail').value.trim();
+    const password = document.getElementById('authPassword').value.trim();
+
+    if (!email || !password) {
+        alert('Please enter both an email and password.');
+        return;
+    }
+
+    try {
+        let { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+
+        if (error) {
+            const signUpRes = await supabaseClient.auth.signUp({ email, password });
+            if (signUpRes.error) {
+                alert('Authentication Error: ' + signUpRes.error.message);
+                return;
+            }
+            if (signUpRes.data.user && signUpRes.data.session) {
+                alert('Account created & logged in!');
+                data = signUpRes.data;
+            } else {
+                alert('Account created! Please check your email to confirm before logging in.');
+                return;
+            }
+        }
+
+        if (data && data.user) {
+            currentUser = data.user;
+            updateUIForUser();
+            await loadHoldingsFromSupabase();
+        }
+    } catch (err) {
+        alert('Unexpected Auth Error: ' + err.message);
+    }
+}
+
+async function handleLogout() {
+    if (supabaseClient) await supabaseClient.auth.signOut();
+    currentUser = null;
+    document.getElementById('userInfo').innerText = '🔐 Status: Not logged in (Saving locally)';
+    document.getElementById('authEmail').classList.remove('hidden');
+    document.getElementById('authPassword').classList.remove('hidden');
+    document.getElementById('logoutBtn').classList.add('hidden');
+    
+    holdings = JSON.parse(localStorage.getItem('portfolio_holdings')) || [];
+    saveAndRender();
+}
+
+function updateUIForUser() {
+    if (currentUser) {
+        document.getElementById('userInfo').innerText = `☁️ Logged in as: ${currentUser.email}`;
+        document.getElementById('authEmail').classList.add('hidden');
+        document.getElementById('authPassword').classList.add('hidden');
+        document.getElementById('logoutBtn').classList.remove('hidden');
+    }
+}
+
+async function loadHoldingsFromSupabase() {
+    if (!currentUser || !supabaseClient) return;
+
+    try {
+        const { data, error } = await supabaseClient.from('holdings').select('*');
+        if (error) {
+            console.error('Error fetching holdings from Supabase:', error);
+            return;
+        }
+
+        if (data) {
+            holdings = data;
+            saveAndRender(false);
+            refreshStockPrices();
+        }
+    } catch (err) {
+        console.error('Unexpected error loading holdings:', err);
+    }
+}
+
+async function syncHoldingToSupabase(entry, isDelete = false) {
+    if (!currentUser || !supabaseClient) return;
+
+    try {
+        if (isDelete) {
+            const { error } = await supabaseClient.from('holdings').delete().eq('id', entry.id);
+            if (error) console.error('Supabase Delete Error:', error);
+        } else {
+            const payload = { 
+                id: Number(entry.id),
+                user_id: currentUser.id,
+                type: String(entry.type),
+                name: String(entry.name || 'Unnamed Entry'),
+                symbol: entry.symbol ? String(entry.symbol) : null,
+                shares: entry.shares ? Number(entry.shares) : null,
+                unitPrice: entry.unitPrice ? Number(entry.unitPrice) : null,
+                percentChange: entry.percentChange ? Number(entry.percentChange) : 0,
+                totalVal: Number(entry.totalVal) || 0,
+                lastUpdated: Number(entry.lastUpdated) || Date.now()
+            };
+
+            const { error } = await supabaseClient.from('holdings').upsert(payload);
+            if (error) {
+                console.error('Supabase Sync Error:', error);
+                alert('Database Error (' + error.code + '): ' + error.message);
+            }
+        }
+    } catch (err) {
+        console.error('Unexpected Sync Error:', err);
+    }
+}
+
+// --- CORE APP LOGIC ---
+
+function toggleFields() {
+    const type = document.getElementById('accountType').value;
+    if (type === 'stock') {
+        document.getElementById('stockFields').classList.remove('hidden');
+        document.getElementById('retirementFields').classList.add('hidden');
+    } else {
+        document.getElementById('stockFields').classList.add('hidden');
+        document.getElementById('retirementFields').classList.remove('hidden');
+    }
+}
+
+async function fetchStockPrice(symbol, bypassCache = false) {
+    if (!FINNHUB_API_KEY || FINNHUB_API_KEY === 'YOUR_API_KEY_HERE') {
+        return { price: 0, percentChange: 0, timestamp: Date.now() };
+    }
+
+    const cleanSymbol = symbol.toUpperCase().trim();
+    const cacheKey = `price_cache_${cleanSymbol}`;
+    const cachedData = JSON.parse(localStorage.getItem(cacheKey));
+    const now = Date.now();
+
+    if (!bypassCache && cachedData && cachedData.percentChange !== undefined && (now - cachedData.timestamp < CACHE_DURATION_MS)) {
+        return cachedData;
+    }
+
+    try {
+        const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${cleanSymbol}&token=${FINNHUB_API_KEY}`);
+        const data = await res.json();
+        
+        const freshPrice = data.c || 0;
+        const percentChange = data.dp || 0;
+
+        const result = { price: freshPrice, percentChange: percentChange, timestamp: now };
+
+        if (freshPrice > 0) {
+            localStorage.setItem(cacheKey, JSON.stringify(result));
+        }
+
+        return result;
+    } catch (err) {
+        return cachedData || { price: 0, percentChange: 0, timestamp: Date.now() };
+    }
+}
+
+async function refreshStockPrices() {
+    const stockHoldings = holdings.filter(h => h.type === 'stock');
+    const uniqueSymbols = [...new Set(stockHoldings.map(h => h.symbol.toUpperCase().trim()))];
+
+    const priceMap = {};
+
+    for (let i = 0; i < uniqueSymbols.length; i++) {
+        const symbol = uniqueSymbols[i];
+        priceMap[symbol] = await fetchStockPrice(symbol, true);
+        if (i < uniqueSymbols.length - 1) await sleep(100);
+    }
+
+    holdings.forEach(h => {
+        if (h.type === 'stock' && priceMap[h.symbol] && priceMap[h.symbol].price > 0) {
+            h.unitPrice = priceMap[h.symbol].price;
+            h.percentChange = priceMap[h.symbol].percentChange || 0;
+            h.totalVal = h.shares * h.unitPrice;
+            h.lastUpdated = priceMap[h.symbol].timestamp;
+            syncHoldingToSupabase(h);
+        }
+    });
+
+    saveAndRender();
+}
+
+function editHolding(id) {
+    const entry = holdings.find(h => h.id === id);
+    if (!entry) return;
+
+    editingId = id;
+    document.getElementById('accountType').value = entry.type;
+    document.getElementById('accountName').value = entry.name;
+    toggleFields();
+
+    if (entry.type === 'stock') {
+        document.getElementById('symbol').value = entry.symbol || '';
+        document.getElementById('shares').value = entry.shares || '';
+    } else {
+        document.getElementById('currentValue').value = entry.totalVal || '';
+    }
+
+    document.getElementById('formTitle').innerText = '✏️ Edit Investment Entry';
+    document.getElementById('submitBtn').innerText = 'Save Changes';
+    document.getElementById('submitBtn').style.background = '#10b981';
+    document.getElementById('cancelBtn').classList.remove('hidden');
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function cancelEdit() {
+    editingId = null;
+    document.getElementById('accountName').value = '';
+    document.getElementById('symbol').value = '';
+    document.getElementById('shares').value = '';
+    document.getElementById('currentValue').value = '';
+    document.getElementById('accountType').value = 'stock';
+    toggleFields();
+
+    document.getElementById('formTitle').innerText = 'Add Investment Account / Holding';
+    document.getElementById('submitBtn').innerText = 'Add Entry';
+    document.getElementById('submitBtn').style.background = '#2563eb';
+    document.getElementById('cancelBtn').classList.add('hidden');
+}
+
+async function handleFormSubmit() {
+    const type = document.getElementById('accountType').value;
+    const name = document.getElementById('accountName').value.trim() || 'Unnamed Entry';
+
+    let updatedEntry = null;
+
+    if (editingId !== null) {
+        const index = holdings.findIndex(h => h.id === editingId);
+        if (index !== -1) {
+            if (type === 'stock') {
+                const symbol = document.getElementById('symbol').value.toUpperCase().trim();
+                const shares = parseFloat(document.getElementById('shares').value) || 0;
+                const priceData = await fetchStockPrice(symbol, true);
+                const totalVal = shares * priceData.price;
+
+                updatedEntry = { 
+                    ...holdings[index], 
+                    type, 
+                    name, 
+                    symbol, 
+                    shares, 
+                    unitPrice: priceData.price, 
+                    percentChange: priceData.percentChange,
+                    totalVal, 
+                    lastUpdated: priceData.timestamp 
+                };
+            } else {
+                const totalVal = parseFloat(document.getElementById('currentValue').value) || 0;
+                updatedEntry = { 
+                    ...holdings[index], 
+                    type, 
+                    name, 
+                    symbol: null,
+                    shares: null,
+                    unitPrice: null,
+                    totalVal, 
+                    percentChange: 0, 
+                    lastUpdated: Date.now() 
+                };
+            }
+            holdings[index] = updatedEntry;
+        }
+    } else {
+        let entry = { id: Date.now(), type, name };
+
+        if (type === 'stock') {
+            const symbol = document.getElementById('symbol').value.toUpperCase().trim();
+            const shares = parseFloat(document.getElementById('shares').value) || 0;
+            const priceData = await fetchStockPrice(symbol, true);
+            const totalVal = shares * priceData.price;
+
+            entry = { 
+                ...entry, 
+                symbol, 
+                shares, 
+                unitPrice: priceData.price, 
+                percentChange: priceData.percentChange,
+                totalVal, 
+                lastUpdated: priceData.timestamp 
+            };
+        } else {
+            const totalVal = parseFloat(document.getElementById('currentValue').value) || 0;
+            entry = { 
+                ...entry, 
+                type, 
+                totalVal, 
+                percentChange: 0, 
+                lastUpdated: Date.now() 
+            };
+        }
+
+        holdings.push(entry);
+        updatedEntry = entry;
+    }
+
+    saveAndRender();
+
+    if (updatedEntry) {
+        await syncHoldingToSupabase(updatedEntry);
+    }
+
+    cancelEdit();
+}
+
+async function removeHolding(id, event) {
+    if (event) event.stopPropagation();
+    const entryToRemove = holdings.find(h => h.id === id);
+    
+    holdings = holdings.filter(h => h.id !== id);
+    if (editingId === id) cancelEdit();
+
+    if (entryToRemove) await syncHoldingToSupabase(entryToRemove, true);
+
+    saveAndRender();
+}
+
+function saveAndRender(shouldSyncLocal = true) {
+    if (shouldSyncLocal) localStorage.setItem('portfolio_holdings', JSON.stringify(holdings));
+    renderTable();
+    renderHeatmap();
+}
+
+function formatTimestamp(ts) {
+    if (!ts) return 'N/A';
+    const d = new Date(ts);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderTable() {
+    const tbody = document.querySelector('#holdingsTable tbody');
+    tbody.innerHTML = '';
+
+    holdings.forEach(h => {
+        let detail = 'Fixed Lump Sum';
+        if (h.type === 'stock') {
+            const changeVal = h.percentChange || 0;
+            const sign = changeVal > 0 ? '+' : '';
+            const color = changeVal > 0 ? '#10b981' : (changeVal < 0 ? '#ef4444' : '#94a3b8');
+            detail = `${h.shares} shares @ $${(h.unitPrice || 0).toFixed(2)} (${h.symbol}) <span style="color:${color}; font-weight:bold;">${sign}${changeVal.toFixed(2)}%</span>`;
+        }
+            
+        const formattedTime = formatTimestamp(h.lastUpdated);
+        const isSelected = h.id === editingId;
+
+        tbody.innerHTML += `
+            <tr onclick="editHolding(${h.id})" style="cursor: pointer; ${isSelected ? 'background: #334155;' : ''}" title="Click to edit entry">
+                <td style="font-weight: bold; color: ${isSelected ? '#38bdf8' : '#fff'};">${h.name}</td>
+                <td>${h.type.toUpperCase()}</td>
+                <td>${detail}</td>
+                <td>$${(h.totalVal || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                <td style="font-size: 0.85rem; color: #94a3b8;">${formattedTime}</td>
+                <td>
+                    <button style="padding: 2px 8px; width: auto; background: #3b82f6; margin-right: 4px;" onclick="event.stopPropagation(); editHolding(${h.id})">Edit</button>
+                    <button style="padding: 2px 8px; width: auto; background: #ef4444;" onclick="removeHolding(${h.id}, event)">Delete</button>
+                </td>
+            </tr>
+        `;
+    });
+}
+
+function renderHeatmap() {
+    const summaryDiv = document.getElementById('portfolioSummary');
+
+    if (holdings.length === 0) {
+        Plotly.purge('heatmap');
+        if (summaryDiv) summaryDiv.innerHTML = '';
+        return;
+    }
+
+    let stockTotal = 0;
+    let retirementTotal = 0;
+    let cashTotal = 0;
+
+    holdings.forEach(h => {
+        if (h.type === 'stock') {
+            stockTotal += (h.totalVal || 0);
+        } else if (h.type === 'retirement') {
+            retirementTotal += (h.totalVal || 0);
+        } else if (h.type === 'cash') {
+            cashTotal += (h.totalVal || 0);
+        }
+    });
+
+    const portfolioTotal = stockTotal + retirementTotal + cashTotal;
+
+    // Render Stat Cards Summary
+    if (summaryDiv) {
+        summaryDiv.innerHTML = `
+            <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; border-left: 4px solid #38bdf8;">
+                <div style="font-size: 0.8rem; color: #94a3b8; font-weight: bold;">TOTAL PORTFOLIO</div>
+                <div style="font-size: 1.25rem; font-weight: bold; color: #fff;">$${portfolioTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+            </div>
+            <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; border-left: 4px solid #3b82f6;">
+                <div style="font-size: 0.8rem; color: #94a3b8; font-weight: bold;">📈 STOCKS</div>
+                <div style="font-size: 1.25rem; font-weight: bold; color: #fff;">$${stockTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                <div style="font-size: 0.75rem; color: #64748b;">${portfolioTotal > 0 ? ((stockTotal / portfolioTotal) * 100).toFixed(1) : 0}% of total</div>
+            </div>
+            <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; border-left: 4px solid #94a3b8;">
+                <div style="font-size: 0.8rem; color: #94a3b8; font-weight: bold;">🏖️ RETIREMENT</div>
+                <div style="font-size: 1.25rem; font-weight: bold; color: #fff;">$${retirementTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                <div style="font-size: 0.75rem; color: #64748b;">${portfolioTotal > 0 ? ((retirementTotal / portfolioTotal) * 100).toFixed(1) : 0}% of total</div>
+            </div>
+            <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; border-left: 4px solid #f59e0b;">
+                <div style="font-size: 0.8rem; color: #94a3b8; font-weight: bold;">🪙 CASH</div>
+                <div style="font-size: 1.25rem; font-weight: bold; color: #fff;">$${cashTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                <div style="font-size: 0.75rem; color: #64748b;">${portfolioTotal > 0 ? ((cashTotal / portfolioTotal) * 100).toFixed(1) : 0}% of total</div>
+            </div>
+        `;
+    }
+
+    const categories = [];
+    const categoryParents = [];
+    const categoryValues = [];
+
+    if (stockTotal > 0) {
+        categories.push('Stock Accounts');
+        categoryParents.push('Total Portfolio');
+        categoryValues.push(stockTotal);
+    }
+
+    if (retirementTotal > 0) {
+        categories.push('Retirement Accounts');
+        categoryParents.push('Total Portfolio');
+        categoryValues.push(retirementTotal);
+    }
+
+    if (cashTotal > 0) {
+        categories.push('Cash Accounts');
+        categoryParents.push('Total Portfolio');
+        categoryValues.push(cashTotal);
+    }
+
+    // Leaf holding details
+    const itemLabels = holdings.map(h => {
+        if (h.type === 'stock') {
+            const pct = h.percentChange || 0;
+            const sign = pct > 0 ? '+' : '';
+            return `${h.name} (${h.symbol})<br>${sign}${pct.toFixed(2)}%`;
+        }
+        return h.name;
+    });
+
+    const itemParents = holdings.map(h => {
+        if (h.type === 'stock') return 'Stock Accounts';
+        if (h.type === 'retirement') return 'Retirement Accounts';
+        return 'Cash Accounts';
+    });
+    
+    const itemValues = holdings.map(h => (h.totalVal || 0));
+    const itemIds = holdings.map(h => h.id);
+
+    const rootLabel = ['Total Portfolio'];
+    const rootParent = [''];
+    const rootValue = [portfolioTotal];
+
+    const allLabels = [...rootLabel, ...categories, ...itemLabels];
+    const allParents = [...rootParent, ...categoryParents, ...itemParents];
+    const allValues = [...rootValue, ...categoryValues, ...itemValues];
+    const customIds = ['', ...categories.map(() => ''), ...itemIds];
+
+    // Calculate hex color per tile
+    const customColors = allLabels.map((label, idx) => {
+        const parent = allParents[idx];
+        
+        if (parent === '' || parent === 'Total Portfolio') {
+            return '#1e293b';
+        }
+
+        // Gold for Cash
+        if (parent === 'Cash Accounts') {
+            return '#f59e0b';
+        }
+
+        // Slate for Retirement
+        if (parent === 'Retirement Accounts') {
+            return '#475569';
+        }
+
+        // Stock performance colors (Red/Green)
+        const holding = holdings.find(h => h.id === customIds[idx]);
+        const pct = holding ? (holding.percentChange || 0) : 0;
+
+        if (pct >= 3) return '#10b981';
+        if (pct <= -3) return '#ef4444';
+
+        if (pct > 0) {
+            return '#10b981';
+        } else if (pct < 0) {
+            return '#ef4444';
+        }
+        return '#475569';
+    });
+
+    const data = [{
+        type: 'treemap',
+        labels: allLabels,
+        parents: allParents,
+        values: allValues,
+        customdata: customIds,
+        marker: { 
+            colors: customColors
+        },
+        branchvalues: 'total',
+        texttemplate: '<b>%{label}</b><br>$%{value:,.2f}<br>%{percentRoot:.1%}',
+        hovertemplate: '<b>%{label}</b><br>Value: $%{value:,.2f}<br>Share of Total: %{percentRoot:.1%}<extra></extra>'
+    }];
+
+    const layout = {
+        margin: { t: 25, l: 10, r: 10, b: 10 },
+        paper_bgcolor: '#1e293b',
+        font: { color: '#ffffff' }
+    };
+
+    Plotly.newPlot('heatmap', data, layout).then(() => {
+        const heatmapDiv = document.getElementById('heatmap');
+        heatmapDiv.on('plotly_click', function(dataPoints) {
+            if (dataPoints && dataPoints.points && dataPoints.points[0]) {
+                const clickedId = dataPoints.points[0].customdata;
+                if (clickedId) editHolding(clickedId);
+            }
+        });
+    });
+}
+
+// Initial Startup
+checkUserSession();
+renderTable();
+renderHeatmap();
+refreshStockPrices();
+</script>
+
+</body>
+</html>
