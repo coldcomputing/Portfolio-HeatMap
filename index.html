@@ -62,7 +62,19 @@
 			<input type="text" id="symbol" placeholder="e.g. AAPL, BTC, ETH">
 			<label for="shares" style="margin-top: 8px;">Number of Shares / Coins</label> <!-- Updated label -->
 			<input type="number" id="shares" placeholder="e.g. 10 or 0.5">
+			
+			<!-- 🛠️ Manual Price Toggle & Input -->
+			<div style="margin-top: 10px; display: flex; align-items: center; gap: 8px;">
+				<input type="checkbox" id="useManualPrice" onchange="toggleManualPriceInput()" style="width: auto; margin: 0; cursor: pointer;">
+				<label for="useManualPrice" style="margin: 0; cursor: pointer; color: #38bdf8; font-size: 0.8rem;">Override with Manual Unit Price</label>
+			</div>
+    
+			<div id="manualPriceContainer" class="hidden" style="margin-top: 8px;">
+				<label for="manualUnitPrice">Manual Unit Price ($)</label>
+				<input type="number" id="manualUnitPrice" step="any" placeholder="e.g. 2.50">
+			</div>
 		</div>
+		
             <div id="retirementFields" class="hidden">
                 <label for="currentValue">Current Total Value ($)</label>
                 <input type="number" id="currentValue" placeholder="e.g. 50000">
@@ -352,6 +364,8 @@ async function refreshPrices() {
     for (let symbol of uniqueStockSymbols) {
         const priceData = await fetchStockPrice(symbol, true);
         holdings.forEach(h => {
+			// 🛡️ Skip refreshing if the user set a manual price override
+			if (h.isManualPrice) return;
             if (h.type === 'stock' && h.symbol.toUpperCase().trim() === symbol) {
                 h.unitPrice = priceData.price;
                 h.percentChange = priceData.percentChange;
@@ -393,9 +407,20 @@ function editHolding(id) {
     document.getElementById('accountName').value = entry.name;
     toggleFields();
 
-    if (entry.type === 'stock') {
+    if (entry.type === 'stock' || entry.type === 'crypto') {
         document.getElementById('symbol').value = entry.symbol || '';
         document.getElementById('shares').value = entry.shares || '';
+        
+        // Check if it's using a manual price override
+        if (entry.isManualPrice) {
+            document.getElementById('useManualPrice').checked = true;
+            document.getElementById('manualUnitPrice').value = entry.unitPrice || '';
+            document.getElementById('manualPriceContainer').classList.remove('hidden');
+        } else {
+            document.getElementById('useManualPrice').checked = false;
+            document.getElementById('manualUnitPrice').value = '';
+            document.getElementById('manualPriceContainer').classList.add('hidden');
+        }
     } else {
         document.getElementById('currentValue').value = entry.totalVal || '';
     }
@@ -414,6 +439,9 @@ function cancelEdit() {
     document.getElementById('symbol').value = '';
     document.getElementById('shares').value = '';
     document.getElementById('currentValue').value = '';
+    document.getElementById('useManualPrice').checked = false;
+    document.getElementById('manualUnitPrice').value = '';
+    document.getElementById('manualPriceContainer').classList.add('hidden');
     document.getElementById('accountType').value = 'stock';
     toggleFields();
 
@@ -432,23 +460,39 @@ async function handleFormSubmit() {
     if (type === 'stock' || type === 'crypto') {
         const symbol = document.getElementById('symbol').value.toUpperCase().trim();
         const shares = parseFloat(document.getElementById('shares').value) || 0;
-        
-        // Use proper price fetcher based on type
-        const priceData = (type === 'crypto') 
-            ? await fetchCryptoPrice(symbol) 
-            : await fetchStockPrice(symbol, true);
+        const isManualPrice = document.getElementById('useManualPrice').checked;
 
-        const totalVal = shares * priceData.price;
+        let unitPrice = 0;
+        let percentChange = 0;
+        let timestamp = Date.now();
+
+        if (isManualPrice) {
+            // Use manual price override
+            unitPrice = parseFloat(document.getElementById('manualUnitPrice').value) || 0;
+            percentChange = 0; // No automatic daily change for manual entry
+        } else {
+            // Fetch live API price
+            const priceData = (type === 'crypto') 
+                ? await fetchCryptoPrice(symbol) 
+                : await fetchStockPrice(symbol, true);
+
+            unitPrice = priceData.price;
+            percentChange = priceData.percentChange;
+            timestamp = priceData.timestamp;
+        }
+
+        const totalVal = shares * unitPrice;
 
         const baseEntry = {
             type,
             name,
             symbol,
             shares,
-            unitPrice: priceData.price,
-            percentChange: priceData.percentChange,
+            unitPrice,
+            percentChange,
             totalVal,
-            lastUpdated: priceData.timestamp
+            isManualPrice, // Flag to remember this uses manual pricing
+            lastUpdated: timestamp
         };
 
         if (editingId !== null) {
@@ -464,7 +508,7 @@ async function handleFormSubmit() {
     } else {
         // Lump sum retirement or cash
         const totalVal = parseFloat(document.getElementById('currentValue').value) || 0;
-        const baseEntry = { type, name, symbol: null, shares: null, unitPrice: null, totalVal, percentChange: 0, lastUpdated: Date.now() };
+        const baseEntry = { type, name, symbol: null, shares: null, unitPrice: null, totalVal, percentChange: 0, isManualPrice: false, lastUpdated: Date.now() };
 
         if (editingId !== null) {
             const index = holdings.findIndex(h => h.id === editingId);
@@ -513,11 +557,20 @@ function renderTable() {
 
     holdings.forEach(h => {
         let detail = 'Fixed Lump Sum';
-        if (h.type === 'stock') {
+        
+        // 📊 Format both Stock AND Crypto holdings with shares/coins, unit price, and daily % change
+        if (h.type === 'stock' || h.type === 'crypto') {
             const changeVal = h.percentChange || 0;
             const sign = changeVal > 0 ? '+' : '';
             const color = changeVal > 0 ? '#10b981' : (changeVal < 0 ? '#ef4444' : '#94a3b8');
-            detail = `${h.shares} shares @ $${(h.unitPrice || 0).toFixed(2)} (${h.symbol}) <span style="color:${color}; font-weight:bold;">${sign}${changeVal.toFixed(2)}%</span>`;
+            const unitLabel = h.type === 'crypto' ? 'coins' : 'shares';
+            
+            // Format unit price flexibly (crypto can have very small prices like $0.00045)
+            const formattedUnitPrice = (h.unitPrice < 1 && h.unitPrice > 0) 
+                ? h.unitPrice.toFixed(4) 
+                : (h.unitPrice || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+            detail = `${h.shares} ${unitLabel} @ $${formattedUnitPrice} (${h.symbol}) <span style="color:${color}; font-weight:bold;">${sign}${changeVal.toFixed(2)}%</span>`;
         }
             
         const formattedTime = formatTimestamp(h.lastUpdated);
@@ -537,6 +590,16 @@ function renderTable() {
             </tr>
         `;
     });
+}
+
+function toggleManualPriceInput() {
+    const isChecked = document.getElementById('useManualPrice').checked;
+    const manualContainer = document.getElementById('manualPriceContainer');
+    if (isChecked) {
+        manualContainer.classList.remove('hidden');
+    } else {
+        manualContainer.classList.add('hidden');
+    }
 }
 
 function renderHeatmap() {
