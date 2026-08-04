@@ -48,6 +48,7 @@
                 <label for="accountType">Account Type</label>
                 <select id="accountType" onchange="toggleFields()">
                     <option value="stock">Stock Holding</option>
+					<option value="crypto">Crypto Holding</option>
                     <option value="retirement">Lump Sum Retirement</option>
                     <option value="cash">Cash / Liquid Savings</option>
                 </select>
@@ -56,12 +57,12 @@
                 <label for="accountName">Account/Asset Name</label>
                 <input type="text" id="accountName" placeholder="e.g. Roth IRA, Tech Portfolio, Emergency Fund">
             </div>
-            <div id="stockFields">
-                <label for="symbol">Stock Symbol</label>
-                <input type="text" id="symbol" placeholder="e.g. AAPL, MSFT">
-                <label for="shares" style="margin-top: 8px;">Number of Shares</label>
-                <input type="number" id="shares" placeholder="e.g. 10">
-            </div>
+		<div id="stockFields">
+			<label for="symbol">Symbol / Ticker</label> <!-- Updated label -->
+			<input type="text" id="symbol" placeholder="e.g. AAPL, BTC, ETH">
+			<label for="shares" style="margin-top: 8px;">Number of Shares / Coins</label> <!-- Updated label -->
+			<input type="number" id="shares" placeholder="e.g. 10 or 0.5">
+		</div>
             <div id="retirementFields" class="hidden">
                 <label for="currentValue">Current Total Value ($)</label>
                 <input type="number" id="currentValue" placeholder="e.g. 50000">
@@ -261,7 +262,7 @@ async function syncHoldingToSupabase(entry, isDelete = false) {
 
 function toggleFields() {
     const type = document.getElementById('accountType').value;
-    if (type === 'stock') {
+    if (type === 'stock' || type === 'crypto') {
         document.getElementById('stockFields').classList.remove('hidden');
         document.getElementById('retirementFields').classList.add('hidden');
     } else {
@@ -303,27 +304,82 @@ async function fetchStockPrice(symbol, bypassCache = false) {
     }
 }
 
-async function refreshStockPrices() {
-    const stockHoldings = holdings.filter(h => h.type === 'stock');
-    const uniqueSymbols = [...new Set(stockHoldings.map(h => h.symbol.toUpperCase().trim()))];
+// Fetch live crypto price & 24h change using CoinGecko API
+async function fetchCryptoPrice(symbol) {
+    const cleanSymbol = symbol.toLowerCase().trim();
+    const cacheKey = `crypto_cache_${cleanSymbol}`;
+    const cachedData = JSON.parse(localStorage.getItem(cacheKey));
+    const now = Date.now();
 
-    const priceMap = {};
+    // Map common tickers to CoinGecko IDs
+    const geckoMap = {
+        'btc': 'bitcoin',
+        'eth': 'ethereum',
+        'sol': 'solana',
+        'ada': 'cardano',
+        'doge': 'dogecoin',
+        'xrp': 'ripple',
+        'dot': 'polkadot',
+        'avax': 'avalanche-2',
+        'link': 'chainlink'
+    };
 
-    for (let i = 0; i < uniqueSymbols.length; i++) {
-        const symbol = uniqueSymbols[i];
-        priceMap[symbol] = await fetchStockPrice(symbol, true);
-        if (i < uniqueSymbols.length - 1) await sleep(100);
+    const geckoId = geckoMap[cleanSymbol] || cleanSymbol;
+
+    try {
+        const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${geckoId}&vs_currencies=usd&include_24hr_change=true`);
+        const data = await res.json();
+
+        if (data[geckoId]) {
+            const freshPrice = data[geckoId].usd || 0;
+            const percentChange = data[geckoId].usd_24h_change || 0;
+            const result = { price: freshPrice, percentChange, timestamp: now };
+            localStorage.setItem(cacheKey, JSON.stringify(result));
+            return result;
+        }
+    } catch (err) {
+        console.error('Crypto fetch error:', err);
     }
 
-    holdings.forEach(h => {
-        if (h.type === 'stock' && priceMap[h.symbol] && priceMap[h.symbol].price > 0) {
-            h.unitPrice = priceMap[h.symbol].price;
-            h.percentChange = priceMap[h.symbol].percentChange || 0;
-            h.totalVal = h.shares * h.unitPrice;
-            h.lastUpdated = priceMap[h.symbol].timestamp;
-            syncHoldingToSupabase(h);
-        }
-    });
+    return cachedData || { price: 0, percentChange: 0, timestamp: Date.now() };
+}
+
+async function refreshPrices() {
+    // 1. Refresh Stocks
+    const stockHoldings = holdings.filter(h => h.type === 'stock');
+    const uniqueStockSymbols = [...new Set(stockHoldings.map(h => h.symbol.toUpperCase().trim()))];
+
+    for (let symbol of uniqueStockSymbols) {
+        const priceData = await fetchStockPrice(symbol, true);
+        holdings.forEach(h => {
+            if (h.type === 'stock' && h.symbol.toUpperCase().trim() === symbol) {
+                h.unitPrice = priceData.price;
+                h.percentChange = priceData.percentChange;
+                h.totalVal = h.shares * h.unitPrice;
+                h.lastUpdated = priceData.timestamp;
+                syncHoldingToSupabase(h);
+            }
+        });
+        await sleep(100);
+    }
+
+    // 2. Refresh Crypto
+    const cryptoHoldings = holdings.filter(h => h.type === 'crypto');
+    const uniqueCryptoSymbols = [...new Set(cryptoHoldings.map(h => h.symbol.toUpperCase().trim()))];
+
+    for (let symbol of uniqueCryptoSymbols) {
+        const priceData = await fetchCryptoPrice(symbol);
+        holdings.forEach(h => {
+            if (h.type === 'crypto' && h.symbol.toUpperCase().trim() === symbol) {
+                h.unitPrice = priceData.price;
+                h.percentChange = priceData.percentChange;
+                h.totalVal = h.shares * h.unitPrice;
+                h.lastUpdated = priceData.timestamp;
+                syncHoldingToSupabase(h);
+            }
+        });
+        await sleep(200);
+    }
 
     saveAndRender();
 }
@@ -373,81 +429,57 @@ async function handleFormSubmit() {
 
     let updatedEntry = null;
 
-    if (editingId !== null) {
-        const index = holdings.findIndex(h => h.id === editingId);
-        if (index !== -1) {
-            if (type === 'stock') {
-                const symbol = document.getElementById('symbol').value.toUpperCase().trim();
-                const shares = parseFloat(document.getElementById('shares').value) || 0;
-                const priceData = await fetchStockPrice(symbol, true);
-                const totalVal = shares * priceData.price;
+    if (type === 'stock' || type === 'crypto') {
+        const symbol = document.getElementById('symbol').value.toUpperCase().trim();
+        const shares = parseFloat(document.getElementById('shares').value) || 0;
+        
+        // Use proper price fetcher based on type
+        const priceData = (type === 'crypto') 
+            ? await fetchCryptoPrice(symbol) 
+            : await fetchStockPrice(symbol, true);
 
-                updatedEntry = { 
-                    ...holdings[index], 
-                    type, 
-                    name, 
-                    symbol, 
-                    shares, 
-                    unitPrice: priceData.price, 
-                    percentChange: priceData.percentChange,
-                    totalVal, 
-                    lastUpdated: priceData.timestamp 
-                };
-            } else {
-                const totalVal = parseFloat(document.getElementById('currentValue').value) || 0;
-                updatedEntry = { 
-                    ...holdings[index], 
-                    type, 
-                    name, 
-                    symbol: null,
-                    shares: null,
-                    unitPrice: null,
-                    totalVal, 
-                    percentChange: 0, 
-                    lastUpdated: Date.now() 
-                };
+        const totalVal = shares * priceData.price;
+
+        const baseEntry = {
+            type,
+            name,
+            symbol,
+            shares,
+            unitPrice: priceData.price,
+            percentChange: priceData.percentChange,
+            totalVal,
+            lastUpdated: priceData.timestamp
+        };
+
+        if (editingId !== null) {
+            const index = holdings.findIndex(h => h.id === editingId);
+            if (index !== -1) {
+                updatedEntry = { ...holdings[index], ...baseEntry };
+                holdings[index] = updatedEntry;
             }
-            holdings[index] = updatedEntry;
+        } else {
+            updatedEntry = { id: Date.now(), ...baseEntry };
+            holdings.push(updatedEntry);
         }
     } else {
-        let entry = { id: Date.now(), type, name };
+        // Lump sum retirement or cash
+        const totalVal = parseFloat(document.getElementById('currentValue').value) || 0;
+        const baseEntry = { type, name, symbol: null, shares: null, unitPrice: null, totalVal, percentChange: 0, lastUpdated: Date.now() };
 
-        if (type === 'stock') {
-            const symbol = document.getElementById('symbol').value.toUpperCase().trim();
-            const shares = parseFloat(document.getElementById('shares').value) || 0;
-            const priceData = await fetchStockPrice(symbol, true);
-            const totalVal = shares * priceData.price;
-
-            entry = { 
-                ...entry, 
-                symbol, 
-                shares, 
-                unitPrice: priceData.price, 
-                percentChange: priceData.percentChange,
-                totalVal, 
-                lastUpdated: priceData.timestamp 
-            };
+        if (editingId !== null) {
+            const index = holdings.findIndex(h => h.id === editingId);
+            if (index !== -1) {
+                updatedEntry = { ...holdings[index], ...baseEntry };
+                holdings[index] = updatedEntry;
+            }
         } else {
-            const totalVal = parseFloat(document.getElementById('currentValue').value) || 0;
-            entry = { 
-                ...entry, 
-                type, 
-                totalVal, 
-                percentChange: 0, 
-                lastUpdated: Date.now() 
-            };
+            updatedEntry = { id: Date.now(), ...baseEntry };
+            holdings.push(updatedEntry);
         }
-
-        holdings.push(entry);
-        updatedEntry = entry;
     }
 
     saveAndRender();
-
-    if (updatedEntry) {
-        await syncHoldingToSupabase(updatedEntry);
-    }
-
+    if (updatedEntry) await syncHoldingToSupabase(updatedEntry);
     cancelEdit();
 }
 
@@ -517,12 +549,15 @@ function renderHeatmap() {
     }
 
     let stockTotal = 0;
+    let cryptoTotal = 0;
     let retirementTotal = 0;
     let cashTotal = 0;
 
     holdings.forEach(h => {
         if (h.type === 'stock') {
             stockTotal += (h.totalVal || 0);
+        } else if (h.type === 'crypto') {
+            cryptoTotal += (h.totalVal || 0);
         } else if (h.type === 'retirement') {
             retirementTotal += (h.totalVal || 0);
         } else if (h.type === 'cash') {
@@ -530,9 +565,9 @@ function renderHeatmap() {
         }
     });
 
-    const portfolioTotal = stockTotal + retirementTotal + cashTotal;
+    const portfolioTotal = stockTotal + cryptoTotal + retirementTotal + cashTotal;
 
-    // Render Stat Cards Summary
+    // 📊 Render Stat Cards Summary Above Heatmap
     if (summaryDiv) {
         summaryDiv.innerHTML = `
             <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; border-left: 4px solid #38bdf8;">
@@ -544,13 +579,18 @@ function renderHeatmap() {
                 <div style="font-size: 1.25rem; font-weight: bold; color: #fff;">$${stockTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
                 <div style="font-size: 0.75rem; color: #64748b;">${portfolioTotal > 0 ? ((stockTotal / portfolioTotal) * 100).toFixed(1) : 0}% of total</div>
             </div>
+            <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; border-left: 4px solid #8b5cf6;">
+                <div style="font-size: 0.8rem; color: #94a3b8; font-weight: bold;">🪙 CRYPTO</div>
+                <div style="font-size: 1.25rem; font-weight: bold; color: #fff;">$${cryptoTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                <div style="font-size: 0.75rem; color: #64748b;">${portfolioTotal > 0 ? ((cryptoTotal / portfolioTotal) * 100).toFixed(1) : 0}% of total</div>
+            </div>
             <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; border-left: 4px solid #94a3b8;">
                 <div style="font-size: 0.8rem; color: #94a3b8; font-weight: bold;">🏖️ RETIREMENT</div>
                 <div style="font-size: 1.25rem; font-weight: bold; color: #fff;">$${retirementTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
                 <div style="font-size: 0.75rem; color: #64748b;">${portfolioTotal > 0 ? ((retirementTotal / portfolioTotal) * 100).toFixed(1) : 0}% of total</div>
             </div>
             <div style="background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; border-left: 4px solid #f59e0b;">
-                <div style="font-size: 0.8rem; color: #94a3b8; font-weight: bold;">🪙 CASH</div>
+                <div style="font-size: 0.8rem; color: #94a3b8; font-weight: bold;">💵 CASH</div>
                 <div style="font-size: 1.25rem; font-weight: bold; color: #fff;">$${cashTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
                 <div style="font-size: 0.75rem; color: #64748b;">${portfolioTotal > 0 ? ((cashTotal / portfolioTotal) * 100).toFixed(1) : 0}% of total</div>
             </div>
@@ -567,6 +607,12 @@ function renderHeatmap() {
         categoryValues.push(stockTotal);
     }
 
+    if (cryptoTotal > 0) {
+        categories.push('Crypto Accounts');
+        categoryParents.push('Total Portfolio');
+        categoryValues.push(cryptoTotal);
+    }
+
     if (retirementTotal > 0) {
         categories.push('Retirement Accounts');
         categoryParents.push('Total Portfolio');
@@ -581,7 +627,7 @@ function renderHeatmap() {
 
     // Leaf holding details
     const itemLabels = holdings.map(h => {
-        if (h.type === 'stock') {
+        if (h.type === 'stock' || h.type === 'crypto') {
             const pct = h.percentChange || 0;
             const sign = pct > 0 ? '+' : '';
             return `${h.name} (${h.symbol})<br>${sign}${pct.toFixed(2)}%`;
@@ -591,6 +637,7 @@ function renderHeatmap() {
 
     const itemParents = holdings.map(h => {
         if (h.type === 'stock') return 'Stock Accounts';
+        if (h.type === 'crypto') return 'Crypto Accounts';
         if (h.type === 'retirement') return 'Retirement Accounts';
         return 'Cash Accounts';
     });
@@ -611,33 +658,34 @@ function renderHeatmap() {
     const customColors = allLabels.map((label, idx) => {
         const parent = allParents[idx];
         
+        // Root tile
         if (parent === '' || parent === 'Total Portfolio') {
             return '#1e293b';
         }
 
-        // Gold for Cash
+        // Cash Accounts & Cash Holdings get GOLD
         if (parent === 'Cash Accounts') {
             return '#f59e0b';
         }
 
-        // Slate for Retirement
+        // Retirement Holdings get Slate Gray
         if (parent === 'Retirement Accounts') {
             return '#475569';
         }
 
-        // Stock performance colors (Red/Green)
+        // Stock & Crypto performance colors (Red/Green based on 24h performance)
         const holding = holdings.find(h => h.id === customIds[idx]);
         const pct = holding ? (holding.percentChange || 0) : 0;
 
-        if (pct >= 3) return '#10b981';
-        if (pct <= -3) return '#ef4444';
+        if (pct >= 3) return '#10b981';  // Vibrant Green
+        if (pct <= -3) return '#ef4444'; // Deep Red
 
         if (pct > 0) {
             return '#10b981';
         } else if (pct < 0) {
             return '#ef4444';
         }
-        return '#475569';
+        return '#475569'; // Neutral Slate for 0%
     });
 
     const data = [{
