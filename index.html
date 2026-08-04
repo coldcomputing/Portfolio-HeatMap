@@ -58,12 +58,12 @@
                 <input type="text" id="accountName" placeholder="e.g. Roth IRA, Tech Portfolio, Emergency Fund">
             </div>
 		<div id="stockFields">
-			<label for="symbol">Symbol / Ticker</label> <!-- Updated label -->
-			<input type="text" id="symbol" placeholder="e.g. AAPL, BTC, ETH">
-			<label for="shares" style="margin-top: 8px;">Number of Shares / Coins</label> <!-- Updated label -->
-			<input type="number" id="shares" placeholder="e.g. 10 or 0.5">
-			
-			<!-- 🛠️ Manual Price Toggle & Input -->
+			<label for="symbol">Symbol / Ticker</label>
+			<input type="text" id="symbol" placeholder="e.g. AAPL, BTC, GME/WS">
+			<label for="shares" style="margin-top: 8px;">Number of Shares / Coins</label>
+			<input type="number" id="shares" placeholder="e.g. 10 or 0.5" step="any">
+
+			<!-- Manual Price Override Toggle -->
 			<div style="margin-top: 10px; display: flex; align-items: center; gap: 8px;">
 				<input type="checkbox" id="useManualPrice" onchange="toggleManualPriceInput()" style="width: auto; margin: 0; cursor: pointer;">
 				<label for="useManualPrice" style="margin: 0; cursor: pointer; color: #38bdf8; font-size: 0.8rem;">Override with Manual Unit Price</label>
@@ -98,7 +98,13 @@
 
     <!-- Holdings Table -->
     <div class="card">
-        <h3>Holdings Summary</h3>
+		<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+			<h3 style="margin: 0;">Holdings Summary</h3>
+			<!-- 🔄 Refresh Button -->
+			<button id="refreshPricesBtn" onclick="manualPriceRefresh()" style="width: auto; margin: 0; background: #0284c7; padding: 6px 14px; font-size: 0.85rem;">
+			🔄 Refresh Live Prices
+			</button>
+		</div>
         <table id="holdingsTable">
             <thead>
                 <tr>
@@ -283,6 +289,16 @@ function toggleFields() {
     }
 }
 
+function toggleManualPriceInput() {
+    const isChecked = document.getElementById('useManualPrice').checked;
+    const manualContainer = document.getElementById('manualPriceContainer');
+    if (isChecked) {
+        manualContainer.classList.remove('hidden');
+    } else {
+        manualContainer.classList.add('hidden');
+    }
+}
+
 async function fetchStockPrice(symbol, bypassCache = false) {
     if (!FINNHUB_API_KEY || FINNHUB_API_KEY === 'YOUR_API_KEY_HERE') {
         return { price: 0, percentChange: 0, timestamp: Date.now() };
@@ -398,6 +414,93 @@ async function refreshPrices() {
     saveAndRender();
 }
 
+async function manualPriceRefresh() {
+    const btn = document.getElementById('refreshPricesBtn');
+    if (!btn) return;
+
+    const originalText = btn.innerText;
+    btn.disabled = true;
+    btn.style.opacity = '0.7';
+
+    try {
+        const liveHoldings = holdings.filter(h => (h.type === 'stock' || h.type === 'crypto') && !h.isManualPrice && h.symbol);
+        
+        if (liveHoldings.length === 0) {
+            alert('No API-based stock or crypto entries to refresh.');
+            return;
+        }
+
+        const uniqueStockSymbols = [...new Set(liveHoldings.filter(h => h.type === 'stock').map(h => h.symbol.toUpperCase().trim()))];
+        const uniqueCryptoSymbols = [...new Set(liveHoldings.filter(h => h.type === 'crypto').map(h => h.symbol.toLowerCase().trim()))];
+
+        const totalQueries = uniqueStockSymbols.length + uniqueCryptoSymbols.length;
+        let processedCount = 0;
+
+        const priceMap = {};
+
+        // Fetch Stocks
+        for (let i = 0; i < uniqueStockSymbols.length; i++) {
+            const symbol = uniqueStockSymbols[i];
+            processedCount++;
+            btn.innerText = `⏳ Stocks (${processedCount}/${totalQueries})...`;
+
+            const priceData = await fetchStockPrice(symbol, true);
+            if (priceData && priceData.price > 0) {
+                priceMap[`stock_${symbol}`] = priceData;
+            }
+
+            const delay = totalQueries > 15 ? 1000 : 250;
+            if (i < uniqueStockSymbols.length - 1) await sleep(delay);
+        }
+
+        // Fetch Crypto
+        for (let i = 0; i < uniqueCryptoSymbols.length; i++) {
+            const symbol = uniqueCryptoSymbols[i];
+            processedCount++;
+            btn.innerText = `⏳ Crypto (${processedCount}/${totalQueries})...`;
+
+            const priceData = await fetchCryptoPrice(symbol);
+            if (priceData && priceData.price > 0) {
+                priceMap[`crypto_${symbol}`] = priceData;
+            }
+
+            const delay = totalQueries > 10 ? 2000 : 500;
+            if (i < uniqueCryptoSymbols.length - 1) await sleep(delay);
+        }
+
+        let updatedCount = 0;
+        const now = Date.now();
+
+        for (let h of holdings) {
+            if (h.isManualPrice || !h.symbol) continue;
+
+            const key = `${h.type}_${h.type === 'stock' ? h.symbol.toUpperCase().trim() : h.symbol.toLowerCase().trim()}`;
+            const data = priceMap[key];
+
+            if (data && data.price > 0) {
+                h.unitPrice = data.price;
+                h.percentChange = data.percentChange || 0;
+                h.totalVal = h.shares * h.unitPrice;
+                h.lastUpdated = now;
+                
+                await syncHoldingToSupabase(h);
+                updatedCount++;
+            }
+        }
+
+        saveAndRender();
+        alert(`✅ Successfully updated prices and timestamps for ${updatedCount} entries!`);
+
+    } catch (err) {
+        console.error('Staggered refresh failed:', err);
+        alert('⚠️ Refresh interrupted. Some prices were updated, but API rate limits may have been hit.');
+    } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+        btn.style.opacity = '1';
+    }
+}
+
 function editHolding(id) {
     const entry = holdings.find(h => h.id === id);
     if (!entry) return;
@@ -411,7 +514,6 @@ function editHolding(id) {
         document.getElementById('symbol').value = entry.symbol || '';
         document.getElementById('shares').value = entry.shares || '';
         
-        // Check if it's using a manual price override
         if (entry.isManualPrice) {
             document.getElementById('useManualPrice').checked = true;
             document.getElementById('manualUnitPrice').value = entry.unitPrice || '';
@@ -467,11 +569,9 @@ async function handleFormSubmit() {
         let timestamp = Date.now();
 
         if (isManualPrice) {
-            // Use manual price override
             unitPrice = parseFloat(document.getElementById('manualUnitPrice').value) || 0;
-            percentChange = 0; // No automatic daily change for manual entry
+            percentChange = 0;
         } else {
-            // Fetch live API price
             const priceData = (type === 'crypto') 
                 ? await fetchCryptoPrice(symbol) 
                 : await fetchStockPrice(symbol, true);
@@ -491,7 +591,7 @@ async function handleFormSubmit() {
             unitPrice,
             percentChange,
             totalVal,
-            isManualPrice, // Flag to remember this uses manual pricing
+            isManualPrice,
             lastUpdated: timestamp
         };
 
@@ -506,7 +606,6 @@ async function handleFormSubmit() {
             holdings.push(updatedEntry);
         }
     } else {
-        // Lump sum retirement or cash
         const totalVal = parseFloat(document.getElementById('currentValue').value) || 0;
         const baseEntry = { type, name, symbol: null, shares: null, unitPrice: null, totalVal, percentChange: 0, isManualPrice: false, lastUpdated: Date.now() };
 
