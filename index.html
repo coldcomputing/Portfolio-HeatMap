@@ -109,29 +109,37 @@
         </div>
     </div>
 
-    <!-- Holdings Table -->
-    <div class="card">
-		<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+	<!-- Holdings Summary (Accordion + Search + Refresh Button) -->
+	<div class="card">
+		<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
 			<h3 style="margin: 0;">Holdings Summary</h3>
-			<!-- 🔄 Refresh Button -->
-			<button id="refreshPricesBtn" onclick="manualPriceRefresh()" style="width: auto; margin: 0; background: #0284c7; padding: 6px 14px; font-size: 0.85rem;">
-			🔄 Refresh Live Prices
-			</button>
+        
+			<div style="display: flex; gap: 8px; width: auto; align-items: center;">
+				<input type="text" id="holdingSearchInput" onkeyup="filterHoldingsTable()" placeholder="🔍 Search holdings or accounts..." style="width: 220px; margin: 0; padding: 6px 12px; font-size: 0.85rem; border: 1px solid #334155; border-radius: 6px; background: #0f172a; color: #fff;">
+            
+				<button id="refreshPricesBtn" onclick="manualPriceRefresh()" style="width: auto; margin: 0; background: #3b82f6; padding: 6px 14px; font-size: 0.85rem; white-space: nowrap;">
+					🔄 Update Prices
+				</button>
+			</div>
 		</div>
-        <table id="holdingsTable">
-            <thead>
-                <tr>
-                    <th>Account / Name</th>
-                    <th>Type</th>
-                    <th>Detail</th>
-                    <th>Calculated Value ($)</th>
-                    <th>Last Updated</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody></tbody>
-        </table>
-    </div>
+
+		<div style="overflow-x: auto;">
+			<table style="width: 100%; border-collapse: collapse; font-size: 0.9rem; color: #cbd5e1;">
+				<thead>
+					<tr style="border-bottom: 2px solid #334155; text-align: left;">
+						<th style="padding: 10px;">Account / Holding</th>
+						<th style="padding: 10px;">Type</th>
+						<th style="padding: 10px; text-align: right;">Shares / Units</th>
+						<th style="padding: 10px; text-align: right;">Total Value</th>
+						<th style="padding: 10px; text-align: center;">Actions</th>
+					</tr>
+				</thead>
+				<tbody id="holdingsTableBody">
+					<!-- Dynamically populated by renderTable() -->
+				</tbody>
+			</table>
+		</div>
+	</div>
 </div>
 
 <script>
@@ -338,6 +346,63 @@ async function runAIAnalysis() {
         btn.disabled = false;
         btn.innerText = 'Run AI Analysis';
     }
+}
+
+// Expand / Collapse Accordion Groups
+function toggleAccountGroup(groupId) {
+    const rows = document.querySelectorAll(`.${groupId}`);
+    const icon = document.getElementById(`icon-${groupId}`);
+    
+    rows.forEach(row => {
+        if (row.style.display === 'none') {
+            row.style.display = 'table-row';
+            if (icon) icon.style.transform = 'rotate(0deg)';
+        } else {
+            row.style.display = 'none';
+            if (icon) icon.style.transform = 'rotate(-90deg)';
+        }
+    });
+}
+
+// Live Filter Search Function
+function filterHoldingsTable() {
+    const query = document.getElementById('holdingSearchInput').value.toLowerCase().trim();
+    const parentRows = document.querySelectorAll('.account-parent-row');
+
+    parentRows.forEach(parent => {
+        let nextRow = parent.nextElementSibling;
+        let matchFound = false;
+        const accountMatch = parent.textContent.toLowerCase().includes(query);
+
+        while (nextRow && nextRow.classList.contains('holding-child-row')) {
+            const text = nextRow.textContent.toLowerCase();
+            
+            if (query === '') {
+                // When search is cleared, hide child rows (keep default collapsed state)
+                nextRow.style.display = 'none';
+            } else if (accountMatch || text.includes(query)) {
+                // Show child row if it matches query or if parent account matches query
+                nextRow.style.display = 'table-row';
+                matchFound = true;
+            } else {
+                nextRow.style.display = 'none';
+            }
+            nextRow = nextRow.nextElementSibling;
+        }
+
+        // Parent icon update
+        const icon = parent.querySelector('span[id^="icon-"]');
+
+        if (query === '') {
+            parent.style.display = 'table-row';
+            if (icon) icon.style.transform = 'rotate(-90deg)'; // Collapsed arrow
+        } else if (accountMatch || matchFound) {
+            parent.style.display = 'table-row';
+            if (icon) icon.style.transform = 'rotate(0deg)'; // Auto-expand arrow when searching
+        } else {
+            parent.style.display = 'none';
+        }
+    });
 }
 
 // --- CORE APP LOGIC ---
@@ -715,43 +780,95 @@ function formatTimestamp(ts) {
 }
 
 function renderTable() {
-    const tbody = document.querySelector('#holdingsTable tbody');
+    const tbody = document.querySelector('#holdingsTableBody');
+    if (!tbody) return;
     tbody.innerHTML = '';
 
-    holdings.forEach(h => {
-        let detail = 'Fixed Lump Sum';
-        
-        // 📊 Format both Stock AND Crypto holdings with shares/coins, unit price, and daily % change
-        if (h.type === 'stock' || h.type === 'crypto') {
+    if (holdings.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 20px; color: #64748b;">No holdings added yet.</td></tr>`;
+        return;
+    }
+
+    // 1. Group holdings by Account Name
+    const grouped = holdings.reduce((acc, h) => {
+        const account = h.name || 'Uncategorized Account';
+        if (!acc[account]) acc[account] = [];
+        acc[account].push(h);
+        return acc;
+    }, {});
+
+    // 2. Sort Account Groups by Total Value (Largest first)
+    const sortedAccountNames = Object.keys(grouped).sort((a, b) => {
+        const totalA = grouped[a].reduce((sum, h) => sum + (h.totalVal || 0), 0);
+        const totalB = grouped[b].reduce((sum, h) => sum + (h.totalVal || 0), 0);
+        return totalB - totalA;
+    });
+
+    // 3. Render Accordion Group Headers + Holding Rows
+    sortedAccountNames.forEach((accountName, index) => {
+        // Sort individual holdings inside this account by value (Largest first)
+        const groupHoldings = grouped[accountName].sort((a, b) => (b.totalVal || 0) - (a.totalVal || 0));
+        const accountTotal = groupHoldings.reduce((sum, h) => sum + (h.totalVal || 0), 0);
+        const groupId = `account-group-${index}`;
+
+        // Parent Header Row (Account Level)
+        const parentTr = document.createElement('tr');
+        parentTr.className = 'account-parent-row';
+        parentTr.style.background = '#1e293b';
+        parentTr.style.borderBottom = '1px solid #334155';
+        parentTr.style.cursor = 'pointer';
+        parentTr.onclick = () => toggleAccountGroup(groupId);
+
+        // Arrow starts pointing left (►) to show it is closed
+        parentTr.innerHTML = `
+            <td style="padding: 12px 10px; font-weight: bold; color: #f8fafc;">
+                <span id="icon-${groupId}" style="display: inline-block; width: 16px; margin-right: 6px; transform: rotate(-90deg); transition: transform 0.2s;">▼</span>
+                🏦 ${accountName} <span style="font-size: 0.8rem; color: #94a3b8; font-weight: normal;">(${groupHoldings.length} items)</span>
+            </td>
+            <td style="padding: 10px; color: #94a3b8; font-style: italic;">Account Group</td>
+            <td style="padding: 10px;"></td>
+            <td style="padding: 10px; text-align: right; font-weight: bold; color: #38bdf8;">$${accountTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            <td style="padding: 10px; text-align: center;"></td>
+        `;
+        tbody.appendChild(parentTr);
+
+        // Child Rows (Hidden by default using display: none)
+        groupHoldings.forEach(h => {
+            const childTr = document.createElement('tr');
+            childTr.className = `holding-child-row ${groupId}`;
+            childTr.style.borderBottom = '1px solid #1e293b';
+            childTr.style.background = '#0f172a';
+            childTr.style.display = 'none'; // 👈 Starts closed
+
+            let sharesDisplay = '-';
+            if (h.shares) {
+                const unitLabel = h.type === 'crypto' ? 'coins' : 'shares';
+                sharesDisplay = `${h.shares.toLocaleString()} ${unitLabel}`;
+            }
+
             const changeVal = h.percentChange || 0;
             const sign = changeVal > 0 ? '+' : '';
             const color = changeVal > 0 ? '#10b981' : (changeVal < 0 ? '#ef4444' : '#94a3b8');
-            const unitLabel = h.type === 'crypto' ? 'coins' : 'shares';
-            
-            // Format unit price flexibly (crypto can have very small prices like $0.00045)
-            const formattedUnitPrice = (h.unitPrice < 1 && h.unitPrice > 0) 
-                ? h.unitPrice.toFixed(4) 
-                : (h.unitPrice || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            const pctBadge = (h.type === 'stock' || h.type === 'crypto') 
+                ? `<span style="color:${color}; font-weight:bold; font-size: 0.8rem; margin-left: 6px;">${sign}${changeVal.toFixed(2)}%</span>` 
+                : '';
 
-            detail = `${h.shares} ${unitLabel} @ $${formattedUnitPrice} (${h.symbol}) <span style="color:${color}; font-weight:bold;">${sign}${changeVal.toFixed(2)}%</span>`;
-        }
-            
-        const formattedTime = formatTimestamp(h.lastUpdated);
-        const isSelected = h.id === editingId;
-
-        tbody.innerHTML += `
-            <tr onclick="editHolding(${h.id})" style="cursor: pointer; ${isSelected ? 'background: #334155;' : ''}" title="Click to edit entry">
-                <td style="font-weight: bold; color: ${isSelected ? '#38bdf8' : '#fff'};">${h.name}</td>
-                <td>${h.type.toUpperCase()}</td>
-                <td>${detail}</td>
-                <td>$${(h.totalVal || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
-                <td style="font-size: 0.85rem; color: #94a3b8;">${formattedTime}</td>
-                <td>
+            childTr.innerHTML = `
+                <td style="padding: 8px 10px 8px 36px;">
+                    ${h.symbol ? `<strong>${h.symbol}</strong> — ` : ''}${h.name} ${pctBadge}
+                </td>
+                <td style="padding: 8px 10px;">
+                    <span style="font-size: 0.75rem; background: #334155; padding: 2px 6px; border-radius: 4px; text-transform: uppercase;">${h.type}</span>
+                </td>
+                <td style="padding: 8px 10px; text-align: right;">${sharesDisplay}</td>
+                <td style="padding: 8px 10px; text-align: right; font-weight: 500;">$${(h.totalVal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="padding: 8px 10px; text-align: center;">
                     <button style="padding: 2px 8px; width: auto; background: #3b82f6; margin-right: 4px;" onclick="event.stopPropagation(); editHolding(${h.id})">Edit</button>
                     <button style="padding: 2px 8px; width: auto; background: #ef4444;" onclick="removeHolding(${h.id}, event)">Delete</button>
                 </td>
-            </tr>
-        `;
+            `;
+            tbody.appendChild(childTr);
+        });
     });
 }
 
@@ -949,7 +1066,7 @@ function renderHeatmap() {
 checkUserSession();
 renderTable();
 renderHeatmap();
-refreshStockPrices();
+refreshPrices();
 </script>
 
 </body>
