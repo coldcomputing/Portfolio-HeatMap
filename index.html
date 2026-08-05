@@ -96,6 +96,19 @@
         <div id="heatmap"></div>
     </div>
 
+	<div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h3 style="margin: 0;">🤖 Free Gemini AI Portfolio Analysis</h3>
+            <button id="aiAnalyzeBtn" onclick="runAIAnalysis()" style="width: auto; margin: 0; background: #8b5cf6; padding: 6px 14px; font-size: 0.85rem;">
+                Run AI Analysis
+            </button>
+        </div>
+
+        <div id="aiOutput" style="background: #0f172a; padding: 15px; border-radius: 6px; border: 1px solid #334155; min-height: 80px; font-size: 0.9rem; line-height: 1.5; color: #cbd5e1; white-space: pre-wrap;">
+            Click "Run AI Analysis" to generate insights on your portfolio allocation, risk concentration, and rebalancing recommendations.
+        </div>
+    </div>
+
     <!-- Holdings Table -->
     <div class="card">
 		<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -273,6 +286,57 @@ async function syncHoldingToSupabase(entry, isDelete = false) {
         }
     } catch (err) {
         console.error('Unexpected Sync Error:', err);
+    }
+}
+
+async function runAIAnalysis() {
+    const outputDiv = document.getElementById('aiOutput');
+    const btn = document.getElementById('aiAnalyzeBtn');
+
+    if (!supabaseClient) {
+        alert('Supabase client is not initialized.');
+        return;
+    }
+
+    if (holdings.length === 0) {
+        alert('Add some holdings first before running analysis.');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.innerText = '🧠 Analyzing with Gemini...';
+    outputDiv.innerText = 'Connecting to Gemini AI model...';
+
+    try {
+        const { data, error } = await supabaseClient.functions.invoke('analyze-portfolio', {
+            body: { holdings: holdings }
+        });
+
+        if (error) {
+            console.error('Edge Function Error:', error);
+            
+            // 🛠️ Extract hidden error message from Supabase response context
+            let detail = error.message;
+            if (error.context && typeof error.context.json === 'function') {
+                try {
+                    const body = await error.context.json();
+                    if (body && body.error) detail = body.error;
+                } catch (e) {
+                    // fallback if context is not JSON
+                }
+            }
+            outputDiv.innerText = `⚠️ Error: ${detail}`;
+        } else if (data && data.analysis) {
+            outputDiv.innerHTML = data.analysis.replace(/\n/g, '<br>');
+        } else if (data && data.error) {
+            outputDiv.innerText = '⚠️ Gemini Error: ' + data.error;
+        }
+    } catch (err) {
+        console.error('Gemini analysis failed:', err);
+        outputDiv.innerText = '⚠️ Network error calling Supabase Edge Function.';
+    } finally {
+        btn.disabled = false;
+        btn.innerText = 'Run AI Analysis';
     }
 }
 
