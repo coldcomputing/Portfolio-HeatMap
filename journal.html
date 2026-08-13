@@ -7,7 +7,7 @@
     <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background: #0f172a; color: #f8fafc; }
-        .container { max-width: 1500px; margin: 0 auto; }
+        .container { max-width: 1550px; margin: 0 auto; }
         .card { background: #1e293b; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #334155; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 15px; }
         label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 4px; }
@@ -39,7 +39,7 @@
         <div class="grid">
             <div>
                 <label for="symbol">Stock</label>
-                <input type="text" id="symbol" placeholder="e.g. AAPL, TSLA" style="text-transform: uppercase;" onblur="autoFetchMarkPrice()">
+                <input type="text" id="symbol" placeholder="e.g. AAPL, TSLA" style="text-transform: uppercase;">
             </div>
             <div>
                 <label for="account">Account</label>
@@ -72,15 +72,15 @@
                 <input type="number" id="strike" placeholder="e.g. 150" step="any">
             </div>
 
-			<div>
-				<label for="markPrice">Mark ($ Live)</label>
-				<div style="display: flex; gap: 4px;">
-					<input type="number" id="markPrice" placeholder="Price" step="any">
-					<button type="button" onclick="autoFetchMarkPrice()" style="width: auto; margin: 0; padding: 6px 10px; background: #334155; font-size: 0.75rem;" title="Fetch live stock price">
-						⚡ Fetch
-					</button>
-				</div>
-			</div>
+            <div>
+                <label for="markPrice">Mark ($ Live)</label>
+                <div style="display: flex; gap: 4px;">
+                    <input type="number" id="markPrice" placeholder="Price" step="any">
+                    <button type="button" onclick="autoFetchMarkPrice()" style="width: auto; margin: 0; padding: 6px 10px; background: #334155; font-size: 0.75rem;" title="Fetch live stock price">
+                        ⚡ Fetch
+                    </button>
+                </div>
+            </div>
             <div>
                 <label for="qty">QTY</label>
                 <input type="number" id="qty" placeholder="Shares / Contracts" step="any">
@@ -122,7 +122,13 @@
 
     <!-- Journal Table -->
     <div class="card">
-        <h3>Trade History Log</h3>
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;">
+            <h3 style="margin: 0;">Trade History Log</h3>
+            <button id="refreshMarksBtn" onclick="refreshOpenMarks()" style="width: auto; margin: 0; background: #3b82f6; padding: 6px 14px; font-size: 0.85rem; white-space: nowrap;">
+                🔄 Refresh Open Marks (>5m old)
+            </button>
+        </div>
+
         <div style="overflow-x: auto;">
             <table>
                 <thead>
@@ -159,10 +165,13 @@
 const SUPABASE_URL = 'https://axxupkvohtvztezkhfcu.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_fWd6AHYNhR7oOAQ5OnHV5A_MpgLKdP3';
 const FINNHUB_API_KEY = 'd9nv2f9r01qqbd5s8ptgd9nv2f9r01qqbd5s8pu0';
+const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
 let supabaseClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 let trades = JSON.parse(localStorage.getItem('trade_journal')) || [];
 let editingId = null;
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function toggleOptionFields() {
     const pos = document.getElementById('positionType').value;
@@ -171,16 +180,12 @@ function toggleOptionFields() {
     document.getElementById('strikeContainer').classList.toggle('hidden', !isOption);
 }
 
-// 1. Auto-fetch Live Stock Price for Mark Field
+// Single Field Live Fetch for Form
 async function autoFetchMarkPrice() {
     const symbol = document.getElementById('symbol').value.trim().toUpperCase();
     const markInput = document.getElementById('markPrice');
 
-    if (!symbol) {
-        alert('Enter a Stock ticker first.');
-        return;
-    }
-
+    if (!symbol) return alert('Enter a Stock ticker first.');
     markInput.placeholder = 'Fetching...';
 
     try {
@@ -188,19 +193,97 @@ async function autoFetchMarkPrice() {
         const data = await res.json();
         
         if (data && data.c > 0) {
-            markInput.value = data.c.toFixed(2);
+            document.getElementById('markPrice').value = data.c.toFixed(2);
         } else {
-            alert(`Could not fetch live price for ${symbol}. Please enter manually.`);
+            alert(`Could not fetch live price for ${symbol}.`);
         }
     } catch (e) {
-        console.error('Failed to fetch mark price:', e);
         alert('Network error fetching stock price.');
     } finally {
-        markInput.placeholder = 'Auto or Manual';
+        markInput.placeholder = 'Price';
     }
 }
 
-// 2. Math Calculations
+// 🔄 Staggered Bulk Refresh for Open Positions (>5 min old)
+async function refreshOpenMarks() {
+    const btn = document.getElementById('refreshMarksBtn');
+    if (!btn) return;
+
+    const originalText = btn.innerText;
+    const now = Date.now();
+
+    // Filter only open trades whose mark was updated > 5 min ago (or never)
+    const openTradesToRefresh = trades.filter(t => {
+        const isOpen = !t.close_action;
+        const lastUpdated = t.mark_updated || 0;
+        return isOpen && (now - lastUpdated > FIVE_MINUTES_MS);
+    });
+
+    if (openTradesToRefresh.length === 0) {
+        alert('All open positions have been updated within the last 5 minutes!');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.style.opacity = '0.7';
+
+    // Get unique ticker symbols to minimize API requests
+    const uniqueSymbols = [...new Set(openTradesToRefresh.map(t => t.symbol.toUpperCase().trim()))];
+    const priceMap = {};
+    let count = 0;
+
+    try {
+        for (let symbol of uniqueSymbols) {
+            count++;
+            btn.innerText = `⏳ Refreshing (${count}/${uniqueSymbols.length})...`;
+
+            const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`);
+            const data = await res.json();
+
+            if (data && data.c > 0) {
+                priceMap[symbol] = data.c;
+            }
+
+            // Stagger API calls by 300ms to stay within rate limits
+            if (count < uniqueSymbols.length) await sleep(300);
+        }
+
+        let updatedCount = 0;
+
+        // Apply new mark prices to matching trades
+        for (let t of trades) {
+            if (!t.close_action) {
+                const symbolKey = t.symbol.toUpperCase().trim();
+                if (priceMap[symbolKey]) {
+                    t.mark_price = priceMap[symbolKey];
+                    t.mark_updated = Date.now();
+                    updatedCount++;
+
+                    // Sync updated mark to Supabase
+                    if (supabaseClient) {
+                        await supabaseClient.from('trade_journal')
+                            .update({ mark_price: t.mark_price, mark_updated: t.mark_updated })
+                            .eq('id', t.id);
+                    }
+                }
+            }
+        }
+
+        localStorage.setItem('trade_journal', JSON.stringify(trades));
+        renderJournalTable();
+        alert(`✅ Refreshed Mark prices for ${updatedCount} open position(s)!`);
+
+    } catch (err) {
+        console.error('Refresh failed:', err);
+        alert('⚠️ Refresh interrupted due to network or rate limits.');
+    } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+        btn.style.opacity = '1';
+    }
+}
+
+// Math Calculations
 function calculateValues(t) {
     const isOption = t.position_type !== 'Shares';
     const multiplier = isOption ? 100 : 1;
@@ -275,7 +358,7 @@ async function saveTrade() {
         return;
     }
 
-    const tempTrade = { symbol, account, open_date: openDate, position_type: positionType, expiration_date: expirationDate, strike, mark_price: markPrice, qty, open_price: openPrice, close_action: closeAction, close_date: closeDate, close_price: closePrice, notes };
+    const tempTrade = { symbol, account, open_date: openDate, position_type: positionType, expiration_date: expirationDate, strike, mark_price: markPrice, qty, open_price: openPrice, close_action: closeAction, close_date: closeDate, close_price: closePrice, notes, mark_updated: Date.now() };
     const computed = calculateValues(tempTrade);
 
     const tradeData = {
@@ -301,7 +384,6 @@ async function saveTrade() {
     await loadTrades();
 }
 
-// 3. Edit / Update Entry Workflow
 function editTrade(id) {
     const t = trades.find(item => item.id === id);
     if (!t) return;
@@ -356,7 +438,6 @@ function renderJournalTable() {
             ? `<span class="${computed.profitLoss >= 0 ? 'gain' : 'loss'}">$${computed.profitLoss.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span>` 
             : '-';
 
-        // Escape single quotes for safety inside inline onclick
         const safeId = typeof t.id === 'string' ? `'${t.id}'` : t.id;
 
         tbody.innerHTML += `
