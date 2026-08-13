@@ -247,12 +247,13 @@ function parseCSVText(csvText) {
     const lines = csvText.split(/\r\n|\n/).filter(line => line.trim() !== '');
     if (lines.length < 2) return [];
 
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
+    // Parse header row and normalize key names
+    const headers = splitCSVLine(lines[0]).map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
 
     const records = [];
     for (let i = 1; i < lines.length; i++) {
-        const row = lines[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || lines[i].split(',');
-        if (!row || row.length < headers.length) continue;
+        const row = splitCSVLine(lines[i]);
+        if (!row || row.length === 0) continue;
 
         const record = {};
         headers.forEach((header, index) => {
@@ -262,6 +263,27 @@ function parseCSVText(csvText) {
         records.push(record);
     }
     return records;
+}
+
+// Robust line splitting that preserves empty fields (,,,), spaces, and quoted strings
+function splitCSVLine(line) {
+    const result = [];
+    let cur = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+            inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+            result.push(cur);
+            cur = '';
+        } else {
+            cur += char;
+        }
+    }
+    result.push(cur);
+    return result;
 }
 
 async function processCsvUpload() {
