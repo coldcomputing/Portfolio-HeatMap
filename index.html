@@ -102,7 +102,7 @@
             <div style="display: flex; gap: 8px; width: auto; align-items: center;">
                 <input type="text" id="holdingSearchInput" onkeyup="filterHoldingsTable()" placeholder="🔍 Search holdings or accounts..." style="width: 220px; margin: 0; padding: 6px 12px; font-size: 0.85rem; border: 1px solid #334155; border-radius: 6px; background: #0f172a; color: #fff;">
                 <button id="refreshPricesBtn" onclick="manualPriceRefresh()" style="width: auto; margin: 0; background: #3b82f6; padding: 6px 14px; font-size: 0.85rem; white-space: nowrap;">
-                    🔄 Update Prices
+                    🔄 Update Stock Prices
                 </button>
             </div>
         </div>
@@ -242,6 +242,7 @@ function recalculateAggregatedHoldings() {
             totalVal: parseFloat(h.totalVal) || 0,
             pnlDollars: 0,
             pnlPercent: 0,
+            isOption: false,
             isLumpSum: true
         });
     });
@@ -264,13 +265,12 @@ function recalculateAggregatedHoldings() {
         
         const isOption = positionType !== 'Shares';
         const isShort = positionType === 'Sell PUTs' || positionType === 'Sell CALLs';
-        
-        // 🛠️ FIX 1: Options are assigned 'stock' type (never crypto)
         const type = 'stock';
         const multiplier = isOption ? 100 : 1;
 
         let totalQty = 0;
         let totalCostBasis = 0;
+        let totalJournalOpenValue = 0; // Sum of Open Values calculated on Journal page
         let latestMark = group[0].mark_price ? parseFloat(group[0].mark_price) : 0;
 
         group.forEach(t => {
@@ -280,27 +280,35 @@ function recalculateAggregatedHoldings() {
             totalQty += qty;
             totalCostBasis += (qty * openPrice * multiplier);
 
+            // Fetch Journal Open Value if computed (including $0.60 fees)
+            const rawOpenVal = qty * openPrice * multiplier;
+            const openFee = isOption ? (qty * 0.60) : 0;
+            const openVal = isShort ? (rawOpenVal - openFee) : (rawOpenVal + openFee);
+            totalJournalOpenValue += (t.open_value ? parseFloat(t.open_value) : openVal);
+
             if (t.mark_price && parseFloat(t.mark_price) > 0) {
                 latestMark = parseFloat(t.mark_price);
             }
         });
 
         const avgOpenPrice = totalQty > 0 ? (totalCostBasis / (totalQty * multiplier)) : 0;
-        
-        // Market price is per share/contract unit
-        const marketUnitPrice = latestMark > 0 ? latestMark : avgOpenPrice;
-        
-        // 🛠️ FIX 2: Total Value uses the 100x multiplier for options
-        const totalVal = totalQty * marketUnitPrice * multiplier;
 
+        let totalVal = 0;
         let pnlDollars = 0;
-        if (isShort) {
-            pnlDollars = totalCostBasis - totalVal;
-        } else {
-            pnlDollars = totalVal - totalCostBasis;
-        }
+        let pnlPercent = 0;
 
-        const pnlPercent = totalCostBasis > 0 ? ((pnlDollars / totalCostBasis) * 100) : 0;
+        if (isOption) {
+            // 🛠️ FOR OPTIONS: Lock total value to the Journal Open Value (Suppress stock price math)
+            totalVal = totalJournalOpenValue;
+            pnlDollars = null;
+            pnlPercent = null;
+        } else {
+            // FOR SHARES: Use live market price & standard P/L calculation
+            const marketUnitPrice = latestMark > 0 ? latestMark : avgOpenPrice;
+            totalVal = totalQty * marketUnitPrice;
+            pnlDollars = totalVal - totalCostBasis;
+            pnlPercent = totalCostBasis > 0 ? ((pnlDollars / totalCostBasis) * 100) : 0;
+        }
 
         aggregatedHoldings.push({
             id: `aggregated_${key}`,
@@ -310,7 +318,7 @@ function recalculateAggregatedHoldings() {
             type: type,
             qty: totalQty,
             avgOpenPrice: avgOpenPrice,
-            marketPrice: marketUnitPrice,
+            marketPrice: isOption ? null : (latestMark > 0 ? latestMark : avgOpenPrice),
             costBasis: totalCostBasis,
             totalVal: totalVal,
             pnlDollars: pnlDollars,
@@ -333,11 +341,12 @@ async function manualPriceRefresh() {
     btn.style.opacity = '0.7';
 
     try {
-        const openTrades = journalTrades.filter(t => !t.close_action);
-        const uniqueSymbols = [...new Set(openTrades.map(t => t.symbol.toUpperCase().trim()))];
+        // Only refresh Stock Share positions
+        const shareTrades = journalTrades.filter(t => !t.close_action && t.position_type === 'Shares');
+        const uniqueSymbols = [...new Set(shareTrades.map(t => t.symbol.toUpperCase().trim()))];
 
         if (uniqueSymbols.length === 0) {
-            alert('No open positions to update.');
+            alert('No active stock share positions to update.');
             return;
         }
 
@@ -351,7 +360,7 @@ async function manualPriceRefresh() {
 
             if (data && data.c > 0) {
                 const freshPrice = data.c;
-                openTrades.forEach(t => {
+                shareTrades.forEach(t => {
                     if (t.symbol.toUpperCase().trim() === symbol) {
                         t.mark_price = freshPrice;
                         t.mark_updated = Date.now();
@@ -370,7 +379,7 @@ async function manualPriceRefresh() {
 
         localStorage.setItem('trade_journal', JSON.stringify(journalTrades));
         recalculateAggregatedHoldings();
-        alert(`✅ Refreshed market prices for open positions!`);
+        alert(`✅ Refreshed market prices for stock share positions!`);
 
     } catch (err) {
         alert('⚠️ Price refresh failed: ' + err.message);
@@ -492,17 +501,23 @@ function renderTable() {
 
             const qtyDisplay = h.qty ? h.qty.toLocaleString() : '-';
             const avgOpenDisplay = h.avgOpenPrice ? `$${h.avgOpenPrice.toFixed(2)}` : '-';
-            const marketPriceDisplay = h.marketPrice ? `$${h.marketPrice.toFixed(2)}` : '-';
+            
+            // Format Market Price
+            const marketPriceDisplay = h.isOption 
+                ? '<span style="color: #64748b; font-size: 0.8rem; font-style: italic;">N/A (Option)</span>'
+                : (h.marketPrice ? `$${h.marketPrice.toFixed(2)}` : '-');
 
-            let pnlDollarsDisplay = '-';
-            if (!h.isLumpSum) {
+            // Format P/L ($)
+            let pnlDollarsDisplay = '<span style="color: #64748b; font-size: 0.8rem;">-</span>';
+            if (!h.isLumpSum && !h.isOption && h.pnlDollars !== null) {
                 const color = h.pnlDollars >= 0 ? '#10b981' : '#ef4444';
                 const sign = h.pnlDollars >= 0 ? '+' : '';
                 pnlDollarsDisplay = `<span style="color: ${color}; font-weight: bold;">${sign}$${h.pnlDollars.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`;
             }
 
-            let pnlPercentDisplay = '-';
-            if (!h.isLumpSum) {
+            // Format P/L (%)
+            let pnlPercentDisplay = '<span style="color: #64748b; font-size: 0.8rem;">-</span>';
+            if (!h.isLumpSum && !h.isOption && h.pnlPercent !== null) {
                 let color = '#ef4444';
                 const pct = h.pnlPercent;
 
@@ -529,10 +544,10 @@ function renderTable() {
                 </td>
                 <td style="padding: 8px 10px; text-align: right;">${qtyDisplay}</td>
                 <td style="padding: 8px 10px; text-align: right;">${avgOpenDisplay}</td>
-                <td style="padding: 8px 10px; text-align: right; font-weight: bold; color: #38bdf8;">${marketPriceDisplay}</td>
+                <td style="padding: 8px 10px; text-align: right; font-weight: bold;">${marketPriceDisplay}</td>
                 <td style="padding: 8px 10px; text-align: right;">${pnlDollarsDisplay}</td>
                 <td style="padding: 8px 10px; text-align: right;">${pnlPercentDisplay}</td>
-                <td style="padding: 8px 10px; text-align: right; font-weight: 500;">$${(h.totalVal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="padding: 8px 10px; text-align: right; font-weight: 500; color: #38bdf8;">$${(h.totalVal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                 <td style="padding: 8px 10px; text-align: right; font-weight: 500; color: #cbd5e1;">${accountWeight}%</td>
                 <td style="padding: 8px 10px; text-align: center;">${actionButtons}</td>
             `;
@@ -664,6 +679,9 @@ function renderHeatmap() {
     if (cashTotal > 0) { categories.push('Cash Accounts'); categoryParents.push('Total Portfolio'); categoryValues.push(cashTotal); }
 
     const itemLabels = aggregatedHoldings.map(h => {
+        if (h.isOption) {
+            return `${h.name}`;
+        }
         if (h.type === 'stock' || h.type === 'crypto') {
             const pct = h.pnlPercent || 0;
             const sign = pct >= 0 ? '+' : '';
@@ -692,8 +710,9 @@ function renderHeatmap() {
         if (parent === 'Retirement Accounts') return '#475569';
 
         const holding = aggregatedHoldings.find(h => label.includes(h.name));
-        const pct = holding ? (holding.pnlPercent || 0) : 0;
+        if (!holding || holding.isOption) return '#334155'; // Neutral blue-gray for option positions
 
+        const pct = holding.pnlPercent || 0;
         if (pct >= 10) return '#10b981'; 
         if (pct >= 0) return '#eab308';  
         if (pct >= -10) return '#f97316';
