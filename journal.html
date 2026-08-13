@@ -72,10 +72,15 @@
                 <input type="number" id="strike" placeholder="e.g. 150" step="any">
             </div>
 
-            <div>
-                <label for="markPrice">Mark ($ Live)</label>
-                <input type="number" id="markPrice" placeholder="Auto or Manual" step="any">
-            </div>
+			<div>
+				<label for="markPrice">Mark ($ Live)</label>
+				<div style="display: flex; gap: 4px;">
+					<input type="number" id="markPrice" placeholder="Price" step="any">
+					<button type="button" onclick="autoFetchMarkPrice()" style="width: auto; margin: 0; padding: 6px 10px; background: #334155; font-size: 0.75rem;" title="Fetch live stock price">
+						⚡ Fetch
+					</button>
+				</div>
+			</div>
             <div>
                 <label for="qty">QTY</label>
                 <input type="number" id="qty" placeholder="Shares / Contracts" step="any">
@@ -169,16 +174,29 @@ function toggleOptionFields() {
 // 1. Auto-fetch Live Stock Price for Mark Field
 async function autoFetchMarkPrice() {
     const symbol = document.getElementById('symbol').value.trim().toUpperCase();
-    if (!symbol || !FINNHUB_API_KEY) return;
+    const markInput = document.getElementById('markPrice');
+
+    if (!symbol) {
+        alert('Enter a Stock ticker first.');
+        return;
+    }
+
+    markInput.placeholder = 'Fetching...';
 
     try {
         const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`);
         const data = await res.json();
+        
         if (data && data.c > 0) {
-            document.getElementById('markPrice').value = data.c.toFixed(2);
+            markInput.value = data.c.toFixed(2);
+        } else {
+            alert(`Could not fetch live price for ${symbol}. Please enter manually.`);
         }
     } catch (e) {
         console.error('Failed to fetch mark price:', e);
+        alert('Network error fetching stock price.');
+    } finally {
+        markInput.placeholder = 'Auto or Manual';
     }
 }
 
@@ -326,35 +344,43 @@ function renderJournalTable() {
     const tbody = document.getElementById('journalTableBody');
     tbody.innerHTML = '';
 
+    if (!trades || trades.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="18" style="text-align: center; padding: 20px; color: #64748b;">No trades logged yet.</td></tr>`;
+        return;
+    }
+
     trades.forEach(t => {
         const computed = calculateValues(t);
 
-        const pnlDisplay = computed.profitLoss !== null && computed.profitLoss !== undefined
+        const pnlDisplay = (computed.profitLoss !== null && computed.profitLoss !== undefined)
             ? `<span class="${computed.profitLoss >= 0 ? 'gain' : 'loss'}">$${computed.profitLoss.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span>` 
             : '-';
 
+        // Escape single quotes for safety inside inline onclick
+        const safeId = typeof t.id === 'string' ? `'${t.id}'` : t.id;
+
         tbody.innerHTML += `
             <tr>
-                <td><strong>${t.symbol}</strong></td>
-                <td>${t.account}</td>
-                <td>${t.open_date}</td>
-                <td>${t.position_type}</td>
+                <td><strong>${t.symbol || '-'}</strong></td>
+                <td>${t.account || 'Regular'}</td>
+                <td>${t.open_date || '-'}</td>
+                <td>${t.position_type || 'Shares'}</td>
                 <td>${t.expiration_date || '-'}</td>
                 <td>${t.strike ? '$' + t.strike : '-'}</td>
                 <td>${t.mark_price ? '$' + parseFloat(t.mark_price).toFixed(2) : '-'}</td>
-                <td>${t.qty}</td>
-                <td>$${parseFloat(t.open_price).toFixed(2)}</td>
+                <td>${t.qty || 0}</td>
+                <td>$${parseFloat(t.open_price || 0).toFixed(2)}</td>
                 <td>$${computed.openValue ? computed.openValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
                 <td>${t.close_action || 'Open'}</td>
                 <td>${t.close_date || '-'}</td>
-                <td>${t.close_price !== null && t.close_price !== undefined && t.close_price !== '' ? '$' + parseFloat(t.close_price).toFixed(2) : '-'}</td>
+                <td>${(t.close_price !== null && t.close_price !== undefined && t.close_price !== '') ? '$' + parseFloat(t.close_price).toFixed(2) : '-'}</td>
                 <td>${computed.closeValue !== null ? '$' + computed.closeValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
                 <td>${pnlDisplay}</td>
                 <td>${computed.daysHeld !== null ? computed.daysHeld + ' d' : '-'}</td>
                 <td class="notes-cell" title="${t.notes || ''}">${t.notes || '-'}</td>
                 <td>
-                    <button style="padding: 2px 8px; width: auto; background: #3b82f6; margin-right: 4px;" onclick="editTrade(${t.id})">Edit</button>
-                    <button style="padding: 2px 8px; width: auto; background: #ef4444;" onclick="deleteTrade(${t.id})">✕</button>
+                    <button style="padding: 2px 8px; width: auto; background: #3b82f6; margin-right: 4px; display: inline-block;" onclick="editTrade(${safeId})">Edit</button>
+                    <button style="padding: 2px 8px; width: auto; background: #ef4444; display: inline-block;" onclick="deleteTrade(${safeId})">✕</button>
                 </td>
             </tr>
         `;
