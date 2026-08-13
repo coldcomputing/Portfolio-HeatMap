@@ -9,9 +9,9 @@
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background: #0f172a; color: #f8fafc; }
         .container { max-width: 1500px; margin: 0 auto; }
         .card { background: #1e293b; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #334155; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 15px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 15px; }
         label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 4px; }
-        input, select, button, textarea { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; box-sizing: border-box; }
+        input, select, button { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; box-sizing: border-box; }
         button { background: #2563eb; color: white; font-weight: bold; cursor: pointer; border: none; margin-top: 10px; }
         button:hover { background: #1d4ed8; }
         .hidden { display: none; }
@@ -22,7 +22,7 @@
         th { background: #0f172a; color: #94a3b8; font-size: 0.75rem; text-transform: uppercase; }
         .gain { color: #10b981; font-weight: bold; }
         .loss { color: #ef4444; font-weight: bold; }
-        .notes-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #94a3b8; font-style: italic; }
+        .notes-cell { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #94a3b8; font-style: italic; }
     </style>
 </head>
 <body>
@@ -35,11 +35,11 @@
 
     <!-- Trade Input Form -->
     <div class="card">
-        <h3>Log Trade Entry</h3>
+        <h3 id="formTitle">Log Trade Entry</h3>
         <div class="grid">
             <div>
                 <label for="symbol">Stock</label>
-                <input type="text" id="symbol" placeholder="e.g. AAPL, TSLA" style="text-transform: uppercase;">
+                <input type="text" id="symbol" placeholder="e.g. AAPL, TSLA" style="text-transform: uppercase;" onblur="autoFetchMarkPrice()">
             </div>
             <div>
                 <label for="account">Account</label>
@@ -63,7 +63,6 @@
                 </select>
             </div>
 
-            <!-- Conditional Option Fields -->
             <div id="expirationContainer" class="hidden">
                 <label for="expirationDate">Expiration</label>
                 <input type="date" id="expirationDate">
@@ -74,8 +73,8 @@
             </div>
 
             <div>
-                <label for="markPrice">Mark ($)</label>
-                <input type="number" id="markPrice" placeholder="Current Stock Price" step="any">
+                <label for="markPrice">Mark ($ Live)</label>
+                <input type="number" id="markPrice" placeholder="Auto or Manual" step="any">
             </div>
             <div>
                 <label for="qty">QTY</label>
@@ -83,10 +82,9 @@
             </div>
             <div>
                 <label for="openPrice">Open Price ($)</label>
-                <input type="number" id="openPrice" placeholder="Price paid per share/contract" step="any">
+                <input type="number" id="openPrice" placeholder="Price paid" step="any">
             </div>
 
-            <!-- Closing Entry Fields -->
             <div>
                 <label for="closeAction">Action</label>
                 <select id="closeAction">
@@ -102,17 +100,19 @@
             </div>
             <div>
                 <label for="closePrice">Close Price ($)</label>
-                <input type="number" id="closePrice" placeholder="Close price" step="any">
+                <input type="number" id="closePrice" placeholder="Exit price" step="any">
             </div>
         </div>
 
-        <!-- 📝 Notes Text Area -->
         <div style="margin-top: 10px;">
             <label for="notes">Trade Notes / Strategy Thesis</label>
-            <input type="text" id="notes" placeholder="e.g., Earnings play, sold 30 delta put, target 50% max profit..." style="width: 100%;">
+            <input type="text" id="notes" placeholder="Strategy notes, delta, profit targets..." style="width: 100%;">
         </div>
 
-        <button id="saveBtn" onclick="saveTrade()">Save Trade Entry</button>
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+            <button id="saveBtn" onclick="saveTrade()">Save Trade Entry</button>
+            <button id="cancelBtn" onclick="resetForm()" class="hidden" style="background: #64748b; width: auto;">Cancel Edit</button>
+        </div>
     </div>
 
     <!-- Journal Table -->
@@ -153,9 +153,11 @@
 <script>
 const SUPABASE_URL = 'https://axxupkvohtvztezkhfcu.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_fWd6AHYNhR7oOAQ5OnHV5A_MpgLKdP3';
-let supabaseClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const FINNHUB_API_KEY = 'd9nv2f9r01qqbd5s8ptgd9nv2f9r01qqbd5s8pu0';
 
+let supabaseClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 let trades = JSON.parse(localStorage.getItem('trade_journal')) || [];
+let editingId = null;
 
 function toggleOptionFields() {
     const pos = document.getElementById('positionType').value;
@@ -164,13 +166,33 @@ function toggleOptionFields() {
     document.getElementById('strikeContainer').classList.toggle('hidden', !isOption);
 }
 
+// 1. Auto-fetch Live Stock Price for Mark Field
+async function autoFetchMarkPrice() {
+    const symbol = document.getElementById('symbol').value.trim().toUpperCase();
+    if (!symbol || !FINNHUB_API_KEY) return;
+
+    try {
+        const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`);
+        const data = await res.json();
+        if (data && data.c > 0) {
+            document.getElementById('markPrice').value = data.c.toFixed(2);
+        }
+    } catch (e) {
+        console.error('Failed to fetch mark price:', e);
+    }
+}
+
+// 2. Math Calculations
 function calculateValues(t) {
     const isOption = t.position_type !== 'Shares';
     const multiplier = isOption ? 100 : 1;
     const feePerContract = 0.60;
 
-    let rawOpenVal = t.qty * t.open_price * multiplier;
-    let openFee = isOption ? (t.qty * feePerContract) : 0;
+    const qty = parseFloat(t.qty) || 0;
+    const openPrice = parseFloat(t.open_price) || 0;
+
+    let rawOpenVal = qty * openPrice * multiplier;
+    let openFee = isOption ? (qty * feePerContract) : 0;
     
     const isCredit = t.position_type === 'Sell PUTs' || t.position_type === 'Sell CALLs';
     let openValue = isCredit ? (rawOpenVal - openFee) : (rawOpenVal + openFee);
@@ -187,12 +209,10 @@ function calculateValues(t) {
         if (t.close_action === 'Expired') {
             closeValue = 0;
             profitLoss = isCredit ? openValue : -openValue;
-        } else if (t.close_price !== null && t.close_price !== undefined) {
-            let rawCloseVal = t.qty * t.close_price * multiplier;
-            let closeFee = 0;
-            if (isOption && t.close_price >= 0.05) {
-                closeFee = t.qty * feePerContract;
-            }
+        } else if (t.close_price !== null && t.close_price !== undefined && !isNaN(parseFloat(t.close_price))) {
+            const closePrice = parseFloat(t.close_price);
+            let rawCloseVal = qty * closePrice * multiplier;
+            let closeFee = (isOption && closePrice >= 0.05) ? (qty * feePerContract) : 0;
 
             closeValue = isCredit ? (rawCloseVal + closeFee) : (rawCloseVal - closeFee);
             profitLoss = isCredit ? (openValue - closeValue) : (closeValue - openValue);
@@ -230,8 +250,6 @@ async function saveTrade() {
     const closeDate = document.getElementById('closeDate').value || null;
     const closePriceInput = document.getElementById('closePrice').value;
     const closePrice = closePriceInput !== "" ? parseFloat(closePriceInput) : null;
-    
-    // 📝 Capture Notes
     const notes = document.getElementById('notes').value.trim() || null;
 
     if (!symbol || !openDate || qty <= 0 || openPrice < 0) {
@@ -239,7 +257,7 @@ async function saveTrade() {
         return;
     }
 
-    const tempTrade = { symbol, account, open_date: openDate, position_type: positionType, expiration_date: expirationDate, strike, mark_price: markPrice, qty, open_price: openPrice, close_action: closeAction, close_date: closeDate, close_price: closePrice, notes: notes };
+    const tempTrade = { symbol, account, open_date: openDate, position_type: positionType, expiration_date: expirationDate, strike, mark_price: markPrice, qty, open_price: openPrice, close_action: closeAction, close_date: closeDate, close_price: closePrice, notes };
     const computed = calculateValues(tempTrade);
 
     const tradeData = {
@@ -253,12 +271,46 @@ async function saveTrade() {
     if (supabaseClient) {
         const { data: { session } } = await supabaseClient.auth.getSession();
         if (session) {
-            await supabaseClient.from('trade_journal').insert([{ ...tradeData, user_id: session.user.id }]);
+            if (editingId) {
+                await supabaseClient.from('trade_journal').update(tradeData).eq('id', editingId);
+            } else {
+                await supabaseClient.from('trade_journal').insert([{ ...tradeData, user_id: session.user.id }]);
+            }
         }
     }
 
     resetForm();
     await loadTrades();
+}
+
+// 3. Edit / Update Entry Workflow
+function editTrade(id) {
+    const t = trades.find(item => item.id === id);
+    if (!t) return;
+
+    editingId = id;
+    document.getElementById('symbol').value = t.symbol || '';
+    document.getElementById('account').value = t.account || 'Regular';
+    document.getElementById('openDate').value = t.open_date || '';
+    document.getElementById('positionType').value = t.position_type || 'Shares';
+    toggleOptionFields();
+
+    document.getElementById('expirationDate').value = t.expiration_date || '';
+    document.getElementById('strike').value = t.strike || '';
+    document.getElementById('markPrice').value = t.mark_price || '';
+    document.getElementById('qty').value = t.qty || '';
+    document.getElementById('openPrice').value = t.open_price || '';
+    document.getElementById('closeAction').value = t.close_action || '';
+    document.getElementById('closeDate').value = t.close_date || '';
+    document.getElementById('closePrice').value = t.close_price !== null && t.close_price !== undefined ? t.close_price : '';
+    document.getElementById('notes').value = t.notes || '';
+
+    document.getElementById('formTitle').innerText = '✏️ Edit Trade Entry';
+    document.getElementById('saveBtn').innerText = 'Save Changes';
+    document.getElementById('saveBtn').style.background = '#10b981';
+    document.getElementById('cancelBtn').classList.remove('hidden');
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 async function deleteTrade(id) {
@@ -277,7 +329,7 @@ function renderJournalTable() {
     trades.forEach(t => {
         const computed = calculateValues(t);
 
-        const pnlDisplay = computed.profitLoss !== null 
+        const pnlDisplay = computed.profitLoss !== null && computed.profitLoss !== undefined
             ? `<span class="${computed.profitLoss >= 0 ? 'gain' : 'loss'}">$${computed.profitLoss.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span>` 
             : '-';
 
@@ -289,19 +341,20 @@ function renderJournalTable() {
                 <td>${t.position_type}</td>
                 <td>${t.expiration_date || '-'}</td>
                 <td>${t.strike ? '$' + t.strike : '-'}</td>
-                <td>${t.mark_price ? '$' + t.mark_price.toFixed(2) : '-'}</td>
+                <td>${t.mark_price ? '$' + parseFloat(t.mark_price).toFixed(2) : '-'}</td>
                 <td>${t.qty}</td>
-                <td>$${t.open_price.toFixed(2)}</td>
+                <td>$${parseFloat(t.open_price).toFixed(2)}</td>
                 <td>$${computed.openValue ? computed.openValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
                 <td>${t.close_action || 'Open'}</td>
                 <td>${t.close_date || '-'}</td>
-                <td>${t.close_price !== null && t.close_price !== undefined ? '$' + t.close_price.toFixed(2) : '-'}</td>
+                <td>${t.close_price !== null && t.close_price !== undefined && t.close_price !== '' ? '$' + parseFloat(t.close_price).toFixed(2) : '-'}</td>
                 <td>${computed.closeValue !== null ? '$' + computed.closeValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
                 <td>${pnlDisplay}</td>
                 <td>${computed.daysHeld !== null ? computed.daysHeld + ' d' : '-'}</td>
                 <td class="notes-cell" title="${t.notes || ''}">${t.notes || '-'}</td>
                 <td>
-                    <button style="padding: 2px 6px; width: auto; background: #ef4444;" onclick="deleteTrade(${t.id})">✕</button>
+                    <button style="padding: 2px 8px; width: auto; background: #3b82f6; margin-right: 4px;" onclick="editTrade(${t.id})">Edit</button>
+                    <button style="padding: 2px 8px; width: auto; background: #ef4444;" onclick="deleteTrade(${t.id})">✕</button>
                 </td>
             </tr>
         `;
@@ -309,6 +362,7 @@ function renderJournalTable() {
 }
 
 function resetForm() {
+    editingId = null;
     document.getElementById('symbol').value = '';
     document.getElementById('openDate').value = '';
     document.getElementById('expirationDate').value = '';
@@ -320,6 +374,11 @@ function resetForm() {
     document.getElementById('closeDate').value = '';
     document.getElementById('closePrice').value = '';
     document.getElementById('notes').value = '';
+
+    document.getElementById('formTitle').innerText = 'Log Trade Entry';
+    document.getElementById('saveBtn').innerText = 'Save Trade Entry';
+    document.getElementById('saveBtn').style.background = '#2563eb';
+    document.getElementById('cancelBtn').classList.add('hidden');
 }
 
 loadTrades();
