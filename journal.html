@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Options & Stock Trade Journal</title>
+    <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background: #0f172a; color: #f8fafc; }
+        .container { max-width: 1500px; margin: 0 auto; }
+        .card { background: #1e293b; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #334155; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 15px; }
+        label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 4px; }
+        input, select, button, textarea { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; box-sizing: border-box; }
+        button { background: #2563eb; color: white; font-weight: bold; cursor: pointer; border: none; margin-top: 10px; }
+        button:hover { background: #1d4ed8; }
+        .hidden { display: none; }
+        .nav-bar { display: flex; justify-content: space-between; align-items: center; background: #1e293b; padding: 12px 20px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 20px; }
+        a { color: #38bdf8; text-decoration: none; font-weight: bold; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.8rem; color: #cbd5e1; margin-top: 10px; }
+        th, td { padding: 8px 6px; text-align: left; border-bottom: 1px solid #334155; white-space: nowrap; }
+        th { background: #0f172a; color: #94a3b8; font-size: 0.75rem; text-transform: uppercase; }
+        .gain { color: #10b981; font-weight: bold; }
+        .loss { color: #ef4444; font-weight: bold; }
+        .notes-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #94a3b8; font-style: italic; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="nav-bar">
+        <h2>📖 Options & Stock Trade Journal</h2>
+        <a href="index.html">← Back to Portfolio Heatmap</a>
+    </div>
+
+    <!-- Trade Input Form -->
+    <div class="card">
+        <h3>Log Trade Entry</h3>
+        <div class="grid">
+            <div>
+                <label for="symbol">Stock</label>
+                <input type="text" id="symbol" placeholder="e.g. AAPL, TSLA" style="text-transform: uppercase;">
+            </div>
+            <div>
+                <label for="account">Account</label>
+                <select id="account">
+                    <option value="Regular">Regular</option>
+                    <option value="Roth">Roth</option>
+                </select>
+            </div>
+            <div>
+                <label for="openDate">Opened</label>
+                <input type="date" id="openDate">
+            </div>
+            <div>
+                <label for="positionType">Position</label>
+                <select id="positionType" onchange="toggleOptionFields()">
+                    <option value="Shares">Shares</option>
+                    <option value="Buy PUTs">Buy PUTs</option>
+                    <option value="Sell PUTs">Sell PUTs</option>
+                    <option value="Buy CALLs">Buy CALLs</option>
+                    <option value="Sell CALLs">Sell CALLs</option>
+                </select>
+            </div>
+
+            <!-- Conditional Option Fields -->
+            <div id="expirationContainer" class="hidden">
+                <label for="expirationDate">Expiration</label>
+                <input type="date" id="expirationDate">
+            </div>
+            <div id="strikeContainer" class="hidden">
+                <label for="strike">Strike ($)</label>
+                <input type="number" id="strike" placeholder="e.g. 150" step="any">
+            </div>
+
+            <div>
+                <label for="markPrice">Mark ($)</label>
+                <input type="number" id="markPrice" placeholder="Current Stock Price" step="any">
+            </div>
+            <div>
+                <label for="qty">QTY</label>
+                <input type="number" id="qty" placeholder="Shares / Contracts" step="any">
+            </div>
+            <div>
+                <label for="openPrice">Open Price ($)</label>
+                <input type="number" id="openPrice" placeholder="Price paid per share/contract" step="any">
+            </div>
+
+            <!-- Closing Entry Fields -->
+            <div>
+                <label for="closeAction">Action</label>
+                <select id="closeAction">
+                    <option value="">Open Position</option>
+                    <option value="Closed">Closed</option>
+                    <option value="Expired">Expired</option>
+                    <option value="Rolled">Rolled</option>
+                </select>
+            </div>
+            <div>
+                <label for="closeDate">Date Closed</label>
+                <input type="date" id="closeDate">
+            </div>
+            <div>
+                <label for="closePrice">Close Price ($)</label>
+                <input type="number" id="closePrice" placeholder="Close price" step="any">
+            </div>
+        </div>
+
+        <!-- 📝 Notes Text Area -->
+        <div style="margin-top: 10px;">
+            <label for="notes">Trade Notes / Strategy Thesis</label>
+            <input type="text" id="notes" placeholder="e.g., Earnings play, sold 30 delta put, target 50% max profit..." style="width: 100%;">
+        </div>
+
+        <button id="saveBtn" onclick="saveTrade()">Save Trade Entry</button>
+    </div>
+
+    <!-- Journal Table -->
+    <div class="card">
+        <h3>Trade History Log</h3>
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Stock</th>
+                        <th>Account</th>
+                        <th>Opened</th>
+                        <th>Position</th>
+                        <th>Expiration</th>
+                        <th>Strike</th>
+                        <th>Mark</th>
+                        <th>QTY</th>
+                        <th>Open Price</th>
+                        <th>Open Value</th>
+                        <th>Status</th>
+                        <th>Date Closed</th>
+                        <th>Close Price</th>
+                        <th>Close Value</th>
+                        <th>Profit/Loss</th>
+                        <th>Days Held</th>
+                        <th>Notes</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="journalTableBody">
+                    <!-- Populated dynamically -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://axxupkvohtvztezkhfcu.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_fWd6AHYNhR7oOAQ5OnHV5A_MpgLKdP3';
+let supabaseClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+let trades = JSON.parse(localStorage.getItem('trade_journal')) || [];
+
+function toggleOptionFields() {
+    const pos = document.getElementById('positionType').value;
+    const isOption = pos !== 'Shares';
+    document.getElementById('expirationContainer').classList.toggle('hidden', !isOption);
+    document.getElementById('strikeContainer').classList.toggle('hidden', !isOption);
+}
+
+function calculateValues(t) {
+    const isOption = t.position_type !== 'Shares';
+    const multiplier = isOption ? 100 : 1;
+    const feePerContract = 0.60;
+
+    let rawOpenVal = t.qty * t.open_price * multiplier;
+    let openFee = isOption ? (t.qty * feePerContract) : 0;
+    
+    const isCredit = t.position_type === 'Sell PUTs' || t.position_type === 'Sell CALLs';
+    let openValue = isCredit ? (rawOpenVal - openFee) : (rawOpenVal + openFee);
+
+    let closeValue = null;
+    let profitLoss = null;
+    let daysHeld = null;
+
+    if (t.close_action && t.close_date) {
+        const start = new Date(t.open_date);
+        const end = new Date(t.close_date);
+        daysHeld = Math.max(0, Math.ceil((end - start) / (1000 * 60 * 60 * 24)));
+
+        if (t.close_action === 'Expired') {
+            closeValue = 0;
+            profitLoss = isCredit ? openValue : -openValue;
+        } else if (t.close_price !== null && t.close_price !== undefined) {
+            let rawCloseVal = t.qty * t.close_price * multiplier;
+            let closeFee = 0;
+            if (isOption && t.close_price >= 0.05) {
+                closeFee = t.qty * feePerContract;
+            }
+
+            closeValue = isCredit ? (rawCloseVal + closeFee) : (rawCloseVal - closeFee);
+            profitLoss = isCredit ? (openValue - closeValue) : (closeValue - openValue);
+        }
+    }
+
+    return { openValue, closeValue, profitLoss, daysHeld };
+}
+
+async function loadTrades() {
+    if (supabaseClient) {
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        if (session) {
+            const { data, error } = await supabaseClient.from('trade_journal').select('*').order('open_date', { ascending: false });
+            if (!error && data) trades = data;
+        }
+    }
+    renderJournalTable();
+}
+
+async function saveTrade() {
+    const symbol = document.getElementById('symbol').value.trim().toUpperCase();
+    const account = document.getElementById('account').value;
+    const openDate = document.getElementById('openDate').value;
+    const positionType = document.getElementById('positionType').value;
+    const isOption = positionType !== 'Shares';
+
+    const expirationDate = isOption ? document.getElementById('expirationDate').value : null;
+    const strike = isOption ? (parseFloat(document.getElementById('strike').value) || null) : null;
+    const markPrice = parseFloat(document.getElementById('markPrice').value) || null;
+    const qty = parseFloat(document.getElementById('qty').value) || 0;
+    const openPrice = parseFloat(document.getElementById('openPrice').value) || 0;
+
+    const closeAction = document.getElementById('closeAction').value || null;
+    const closeDate = document.getElementById('closeDate').value || null;
+    const closePriceInput = document.getElementById('closePrice').value;
+    const closePrice = closePriceInput !== "" ? parseFloat(closePriceInput) : null;
+    
+    // 📝 Capture Notes
+    const notes = document.getElementById('notes').value.trim() || null;
+
+    if (!symbol || !openDate || qty <= 0 || openPrice < 0) {
+        alert('Please complete all required opening trade fields.');
+        return;
+    }
+
+    const tempTrade = { symbol, account, open_date: openDate, position_type: positionType, expiration_date: expirationDate, strike, mark_price: markPrice, qty, open_price: openPrice, close_action: closeAction, close_date: closeDate, close_price: closePrice, notes: notes };
+    const computed = calculateValues(tempTrade);
+
+    const tradeData = {
+        ...tempTrade,
+        open_value: computed.openValue,
+        close_value: computed.closeValue,
+        profit_loss: computed.profitLoss,
+        days_held: computed.daysHeld
+    };
+
+    if (supabaseClient) {
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        if (session) {
+            await supabaseClient.from('trade_journal').insert([{ ...tradeData, user_id: session.user.id }]);
+        }
+    }
+
+    resetForm();
+    await loadTrades();
+}
+
+async function deleteTrade(id) {
+    if (!confirm('Delete this trade log entry?')) return;
+    if (supabaseClient) {
+        await supabaseClient.from('trade_journal').delete().eq('id', id);
+    }
+    trades = trades.filter(t => t.id !== id);
+    renderJournalTable();
+}
+
+function renderJournalTable() {
+    const tbody = document.getElementById('journalTableBody');
+    tbody.innerHTML = '';
+
+    trades.forEach(t => {
+        const computed = calculateValues(t);
+
+        const pnlDisplay = computed.profitLoss !== null 
+            ? `<span class="${computed.profitLoss >= 0 ? 'gain' : 'loss'}">$${computed.profitLoss.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span>` 
+            : '-';
+
+        tbody.innerHTML += `
+            <tr>
+                <td><strong>${t.symbol}</strong></td>
+                <td>${t.account}</td>
+                <td>${t.open_date}</td>
+                <td>${t.position_type}</td>
+                <td>${t.expiration_date || '-'}</td>
+                <td>${t.strike ? '$' + t.strike : '-'}</td>
+                <td>${t.mark_price ? '$' + t.mark_price.toFixed(2) : '-'}</td>
+                <td>${t.qty}</td>
+                <td>$${t.open_price.toFixed(2)}</td>
+                <td>$${computed.openValue ? computed.openValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
+                <td>${t.close_action || 'Open'}</td>
+                <td>${t.close_date || '-'}</td>
+                <td>${t.close_price !== null && t.close_price !== undefined ? '$' + t.close_price.toFixed(2) : '-'}</td>
+                <td>${computed.closeValue !== null ? '$' + computed.closeValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
+                <td>${pnlDisplay}</td>
+                <td>${computed.daysHeld !== null ? computed.daysHeld + ' d' : '-'}</td>
+                <td class="notes-cell" title="${t.notes || ''}">${t.notes || '-'}</td>
+                <td>
+                    <button style="padding: 2px 6px; width: auto; background: #ef4444;" onclick="deleteTrade(${t.id})">✕</button>
+                </td>
+            </tr>
+        `;
+    });
+}
+
+function resetForm() {
+    document.getElementById('symbol').value = '';
+    document.getElementById('openDate').value = '';
+    document.getElementById('expirationDate').value = '';
+    document.getElementById('strike').value = '';
+    document.getElementById('markPrice').value = '';
+    document.getElementById('qty').value = '';
+    document.getElementById('openPrice').value = '';
+    document.getElementById('closeAction').value = '';
+    document.getElementById('closeDate').value = '';
+    document.getElementById('closePrice').value = '';
+    document.getElementById('notes').value = '';
+}
+
+loadTrades();
+</script>
+
+</body>
+</html>
