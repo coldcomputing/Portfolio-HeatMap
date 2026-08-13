@@ -10,7 +10,7 @@
     <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background: #0f172a; color: #f8fafc; }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1350px; margin: 0 auto; }
         .card { background: #1e293b; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #334155; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 15px; }
         label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 4px; }
@@ -20,7 +20,7 @@
         .hidden { display: none; }
         #heatmap { width: 100%; height: 500px; border-radius: 8px; overflow: hidden; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #334155; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #334155; white-space: nowrap; }
         .auth-bar { display: flex; justify-content: space-between; align-items: center; background: #0f172a; padding: 10px 15px; border-radius: 6px; border: 1px solid #334155; margin-bottom: 20px; }
         a { color: #38bdf8; text-decoration: none; font-weight: bold; }
     </style>
@@ -50,7 +50,7 @@
     <div class="card">
         <h3 id="formTitle">Add Fixed Asset (Cash / Retirement)</h3>
         <p style="font-size: 0.85rem; color: #94a3b8; margin-top: -5px;">
-            Note: Stocks and Crypto positions are now automatically aggregated from your <a href="journal.html">Trade Journal</a>.
+            Note: Stocks and Crypto positions are automatically aggregated from your <a href="journal.html">Trade Journal</a>.
         </p>
         <div class="grid">
             <div>
@@ -95,7 +95,7 @@
         </div>
     </div>
 
-    <!-- Holdings Summary (Accordion + Search + Refresh Button) -->
+    <!-- Holdings Summary -->
     <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
             <h3 style="margin: 0;">Holdings Summary</h3>
@@ -116,7 +116,10 @@
                         <th style="padding: 10px; text-align: right;">Total QTY</th>
                         <th style="padding: 10px; text-align: right;">Avg Open Price</th>
                         <th style="padding: 10px; text-align: right;">Current Market Price</th>
+                        <th style="padding: 10px; text-align: right;">Profit/Loss ($)</th>
+                        <th style="padding: 10px; text-align: right;">Profit/Loss (%)</th>
                         <th style="padding: 10px; text-align: right;">Total Value</th>
+                        <th style="padding: 10px; text-align: right;">Account Weight</th>
                         <th style="padding: 10px; text-align: center;">Actions</th>
                     </tr>
                 </thead>
@@ -209,11 +212,9 @@ async function loadAllDataFromSupabase() {
     if (!currentUser || !supabaseClient) return;
 
     try {
-        // Load Lump sum holdings (Cash & Retirement)
         const { data: hData } = await supabaseClient.from('holdings').select('*');
         if (hData) lumpSumHoldings = hData.filter(h => h.type === 'cash' || h.type === 'retirement');
 
-        // Load Open Trades from Journal
         const { data: jData } = await supabaseClient.from('trade_journal').select('*');
         if (jData) journalTrades = jData;
 
@@ -234,12 +235,14 @@ function recalculateAggregatedHoldings() {
             account: h.name || 'Uncategorized Account',
             name: h.name || 'Lump Sum Entry',
             symbol: null,
-            type: h.type, // 'cash' or 'retirement'
+            type: h.type,
             qty: null,
             avgOpenPrice: null,
             marketPrice: null,
+            costBasis: parseFloat(h.totalVal) || 0,
             totalVal: parseFloat(h.totalVal) || 0,
-            percentChange: 0,
+            pnlDollars: 0,
+            pnlPercent: 0,
             isLumpSum: true
         });
     });
@@ -262,7 +265,8 @@ function recalculateAggregatedHoldings() {
         const account = group[0].account || 'Regular';
         const positionType = group[0].position_type;
         const isOption = positionType !== 'Shares';
-        const type = isOption ? 'crypto' : 'stock'; // Group options with stock or crypto type
+        const isShort = positionType === 'Sell PUTs' || positionType === 'Sell CALLs';
+        const type = isOption ? 'crypto' : 'stock';
 
         let totalQty = 0;
         let totalCostBasis = 0;
@@ -281,15 +285,21 @@ function recalculateAggregatedHoldings() {
             }
         });
 
-        const avgOpenPrice = totalQty > 0 ? (totalCostBasis / (totalQty * (isOption ? 100 : 1))) : 0;
         const multiplier = isOption ? 100 : 1;
-        
-        // Calculate Market Value based on Mark Price (Fallback to Cost Basis if Mark is 0)
+        const avgOpenPrice = totalQty > 0 ? (totalCostBasis / (totalQty * multiplier)) : 0;
         const marketUnitPrice = latestMark > 0 ? latestMark : avgOpenPrice;
+        
         const totalVal = totalQty * marketUnitPrice * multiplier;
 
-        // Daily % change derived from Mark vs Avg Open Price
-        const percentChange = avgOpenPrice > 0 ? (((marketUnitPrice - avgOpenPrice) / avgOpenPrice) * 100) : 0;
+        // Calculate Profit/Loss ($ and %)
+        let pnlDollars = 0;
+        if (isShort) {
+            pnlDollars = totalCostBasis - totalVal; // Credit received minus current buyback cost
+        } else {
+            pnlDollars = totalVal - totalCostBasis; // Current market value minus cost basis
+        }
+
+        const pnlPercent = totalCostBasis > 0 ? ((pnlDollars / totalCostBasis) * 100) : 0;
 
         aggregatedHoldings.push({
             id: `aggregated_${key}`,
@@ -300,8 +310,10 @@ function recalculateAggregatedHoldings() {
             qty: totalQty,
             avgOpenPrice: avgOpenPrice,
             marketPrice: marketUnitPrice,
+            costBasis: totalCostBasis,
             totalVal: totalVal,
-            percentChange: percentChange,
+            pnlDollars: pnlDollars,
+            pnlPercent: pnlPercent,
             isLumpSum: false
         });
     });
@@ -425,7 +437,7 @@ function renderTable() {
     tbody.innerHTML = '';
 
     if (aggregatedHoldings.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; padding: 20px; color: #64748b;">No open positions or lump sum holdings available.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; padding: 20px; color: #64748b;">No open positions or lump sum holdings available.</td></tr>`;
         return;
     }
 
@@ -466,7 +478,10 @@ function renderTable() {
             <td style="padding: 10px;"></td>
             <td style="padding: 10px;"></td>
             <td style="padding: 10px;"></td>
+            <td style="padding: 10px;"></td>
+            <td style="padding: 10px;"></td>
             <td style="padding: 10px; text-align: right; font-weight: bold; color: #38bdf8;">$${accountTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            <td style="padding: 10px; text-align: right; font-weight: bold; color: #94a3b8;">100.0%</td>
             <td style="padding: 10px; text-align: center;"></td>
         `;
         tbody.appendChild(parentTr);
@@ -477,11 +492,46 @@ function renderTable() {
             childTr.className = `holding-child-row ${groupId}`;
             childTr.style.borderBottom = '1px solid #1e293b';
             childTr.style.background = '#0f172a';
-            childTr.style.display = 'none'; // Closed accordions by default
+            childTr.style.display = 'none';
 
             const qtyDisplay = h.qty ? h.qty.toLocaleString() : '-';
             const avgOpenDisplay = h.avgOpenPrice ? `$${h.avgOpenPrice.toFixed(2)}` : '-';
             const marketPriceDisplay = h.marketPrice ? `$${h.marketPrice.toFixed(2)}` : '-';
+
+            // 1. P/L ($) Formatting (Green if >= 0, Red if < 0)
+            let pnlDollarsDisplay = '-';
+            if (!h.isLumpSum) {
+                const color = h.pnlDollars >= 0 ? '#10b981' : '#ef4444';
+                const sign = h.pnlDollars >= 0 ? '+' : '';
+                pnlDollarsDisplay = `<span style="color: ${color}; font-weight: bold;">${sign}$${h.pnlDollars.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`;
+            }
+
+            // 2. P/L (%) Tiered Formatting
+            // - Green: >= +10%
+            // - Yellow: >= 0% and < +10%
+            // - Orange: <= 0% and >= -10%
+            // - Red: < -10%
+            let pnlPercentDisplay = '-';
+            if (!h.isLumpSum) {
+                let color = '#ef4444'; // Red default (< -10%)
+                const pct = h.pnlPercent;
+
+                if (pct >= 10) {
+                    color = '#10b981'; // Green (>= +10%)
+                } else if (pct >= 0) {
+                    color = '#eab308'; // Yellow (0% to 10%)
+                } else if (pct >= -10) {
+                    color = '#f97316'; // Orange (-10% to 0%)
+                } else {
+                    color = '#ef4444'; // Red (< -10%)
+                }
+
+                const sign = pct >= 0 ? '+' : '';
+                pnlPercentDisplay = `<span style="color: ${color}; font-weight: bold;">${sign}${pct.toFixed(2)}%</span>`;
+            }
+
+            // 3. Account Weight calculation (relative ONLY to this account group)
+            const accountWeight = accountTotal > 0 ? ((h.totalVal / accountTotal) * 100).toFixed(1) : '0.0';
 
             const actionButtons = h.isLumpSum 
                 ? `<button style="padding: 2px 8px; width: auto; background: #3b82f6; margin-right: 4px;" onclick="editLumpSum(${h.id})">Edit</button>
@@ -496,7 +546,10 @@ function renderTable() {
                 <td style="padding: 8px 10px; text-align: right;">${qtyDisplay}</td>
                 <td style="padding: 8px 10px; text-align: right;">${avgOpenDisplay}</td>
                 <td style="padding: 8px 10px; text-align: right; font-weight: bold; color: #38bdf8;">${marketPriceDisplay}</td>
+                <td style="padding: 8px 10px; text-align: right;">${pnlDollarsDisplay}</td>
+                <td style="padding: 8px 10px; text-align: right;">${pnlPercentDisplay}</td>
                 <td style="padding: 8px 10px; text-align: right; font-weight: 500;">$${(h.totalVal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="padding: 8px 10px; text-align: right; font-weight: 500; color: #cbd5e1;">${accountWeight}%</td>
                 <td style="padding: 8px 10px; text-align: center;">${actionButtons}</td>
             `;
             tbody.appendChild(childTr);
@@ -630,8 +683,8 @@ function renderHeatmap() {
 
     const itemLabels = aggregatedHoldings.map(h => {
         if (h.type === 'stock' || h.type === 'crypto') {
-            const pct = h.percentChange || 0;
-            const sign = pct > 0 ? '+' : '';
+            const pct = h.pnlPercent || 0;
+            const sign = pct >= 0 ? '+' : '';
             return `${h.name}<br>${sign}${pct.toFixed(2)}%`;
         }
         return h.name;
@@ -657,11 +710,12 @@ function renderHeatmap() {
         if (parent === 'Retirement Accounts') return '#475569';
 
         const holding = aggregatedHoldings.find(h => label.includes(h.name));
-        const pct = holding ? (holding.percentChange || 0) : 0;
+        const pct = holding ? (holding.pnlPercent || 0) : 0;
 
-        if (pct > 0) return '#10b981'; // Green for gain vs open
-        if (pct < 0) return '#ef4444'; // Red for loss vs open
-        return '#475569';
+        if (pct >= 10) return '#10b981'; // Green
+        if (pct >= 0) return '#eab308';  // Yellow
+        if (pct >= -10) return '#f97316';// Orange
+        return '#ef4444';                // Red
     });
 
     const data = [{
