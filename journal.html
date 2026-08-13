@@ -422,7 +422,7 @@ async function autoFetchMarkPrice() {
     }
 }
 
-// Bulk Staggered Refresh for Open Positions (>5 min old)
+// 🔄 Staggered Bulk Refresh for Open Positions (>5 min old OR missing mark price)
 async function refreshOpenMarks() {
     const btn = document.getElementById('refreshMarksBtn');
     if (!btn) return;
@@ -430,21 +430,28 @@ async function refreshOpenMarks() {
     const originalText = btn.innerText;
     const now = Date.now();
 
+    // Filter open trades if:
+    // 1. Mark price is missing / 0 / null, OR
+    // 2. Mark price was updated more than 5 minutes ago
     const openTradesToRefresh = trades.filter(t => {
         const isOpen = !t.close_action;
+        const hasMissingMark = t.mark_price === null || t.mark_price === undefined || t.mark_price === '' || parseFloat(t.mark_price) === 0;
         const lastUpdated = t.mark_updated || 0;
-        return isOpen && (now - lastUpdated > FIVE_MINUTES_MS);
+        const isStale = (now - lastUpdated > FIVE_MINUTES_MS);
+
+        return isOpen && (hasMissingMark || isStale);
     });
 
     if (openTradesToRefresh.length === 0) {
-        alert('All open positions have been updated within the last 5 minutes!');
+        alert('All open positions have valid Mark prices updated within the last 5 minutes!');
         return;
     }
 
     btn.disabled = true;
     btn.style.opacity = '0.7';
 
-    const uniqueSymbols = [...new Set(openTradesToRefresh.map(t => t.symbol.toUpperCase().trim()))];
+    // Get unique ticker symbols to minimize API requests
+    const uniqueSymbols = [...new Set(openTradesToRefresh.map(t => (t.symbol || '').toUpperCase().trim()).filter(Boolean))];
     const priceMap = {};
     let count = 0;
 
@@ -460,19 +467,22 @@ async function refreshOpenMarks() {
                 priceMap[symbol] = data.c;
             }
 
+            // Stagger API calls by 300ms to stay within rate limits
             if (count < uniqueSymbols.length) await sleep(300);
         }
 
         let updatedCount = 0;
 
+        // Apply new mark prices to matching trades
         for (let t of trades) {
             if (!t.close_action) {
-                const symbolKey = t.symbol.toUpperCase().trim();
+                const symbolKey = (t.symbol || '').toUpperCase().trim();
                 if (priceMap[symbolKey]) {
                     t.mark_price = priceMap[symbolKey];
                     t.mark_updated = Date.now();
                     updatedCount++;
 
+                    // Sync updated mark to Supabase
                     if (supabaseClient && t.id) {
                         await supabaseClient.from('trade_journal')
                             .update({ mark_price: t.mark_price, mark_updated: t.mark_updated })
