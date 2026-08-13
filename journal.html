@@ -226,6 +226,26 @@ let editingId = null;
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Normalizes dates (e.g. MM/DD/YYYY, M/D/YY) into standard YYYY-MM-DD
+function normalizeDate(dateStr) {
+    if (!dateStr || dateStr === '-') return '-';
+    
+    const cleanStr = String(dateStr).trim().split('T')[0].split(' ')[0];
+    
+    if (cleanStr.includes('/')) {
+        const parts = cleanStr.split('/');
+        if (parts.length === 3) {
+            let [month, day, year] = parts;
+            if (month.length === 1) month = '0' + month;
+            if (day.length === 1) day = '0' + day;
+            if (year.length === 2) year = '20' + year;
+            return `${year}-${month}-${day}`;
+        }
+    }
+    
+    return cleanStr;
+}
+
 function toggleOptionFields() {
     const pos = document.getElementById('positionType').value;
     const isOption = pos !== 'Shares';
@@ -309,21 +329,23 @@ async function processCsvUpload() {
             parsedRows.forEach(row => {
                 const symbol = (row['stock'] || row['symbol'] || row['ticker'] || '').toUpperCase();
                 const account = row['account'] || 'Regular';
-                const openDate = row['opened'] || row['open_date'] || row['date'] || new Date().toISOString().split('T')[0];
                 const positionType = row['position'] || row['position_type'] || 'Shares';
                 
                 const isOption = positionType !== 'Shares';
-                const expirationDate = isOption ? (row['expiration'] || row['expiration_date'] || null) : null;
                 const strike = isOption && row['strike'] ? parseFloat(row['strike']) : null;
                 const markPrice = row['mark'] ? parseFloat(row['mark']) : null;
                 const qty = parseFloat(row['qty'] || row['quantity'] || row['shares'] || 0);
                 const openPrice = parseFloat(row['open price'] || row['open_price'] || row['price'] || 0);
 
                 const closeAction = row['status'] || row['action'] || row['close_action'] || null;
-                const closeDate = row['date closed'] || row['close_date'] || null;
                 const closePriceVal = row['close price'] || row['close_price'] || null;
                 const closePrice = closePriceVal !== null && closePriceVal !== '' ? parseFloat(closePriceVal) : null;
                 const notes = row['notes'] || null;
+				
+				const rawOpenDate = row['opened'] || row['open_date'] || row['date'] || new Date().toISOString().split('T')[0];
+				const openDate = normalizeDate(rawOpenDate);
+				const expirationDate = isOption ? normalizeDate(row['expiration'] || row['expiration_date']) : null;
+				const closeDate = normalizeDate(row['date closed'] || row['close_date']);
 
                 if (symbol && qty > 0) {
                     const tempTrade = {
@@ -617,16 +639,19 @@ function renderJournalTables() {
     const openTbody = document.getElementById('openTableBody');
     const closedTbody = document.getElementById('closedTableBody');
     
+    if (!openTbody || !closedTbody) return;
+
     openTbody.innerHTML = '';
     closedTbody.innerHTML = '';
 
+    // 1. Separate Open vs Closed Trades
     let openTrades = trades.filter(t => !t.close_action);
     let closedTrades = trades.filter(t => t.close_action);
 
     document.getElementById('openCount').innerText = `(${openTrades.length})`;
     document.getElementById('closedCount').innerText = `(${closedTrades.length})`;
 
-    // Sort Open Trades: Symbol (A-Z) -> Open Date
+    // 2. Sort Open Trades: Symbol (A-Z) -> Open Date (Oldest to Newest)
     openTrades.sort((a, b) => {
         const symbolA = (a.symbol || '').toUpperCase();
         const symbolB = (b.symbol || '').toUpperCase();
@@ -634,12 +659,12 @@ function renderJournalTables() {
         if (symbolA !== symbolB) {
             return symbolA.localeCompare(symbolB);
         }
-        return new Date(a.open_date || 0) - new Date(b.open_date || 0);
+        return new Date(normalizeDate(a.open_date) || 0) - new Date(normalizeDate(b.open_date) || 0);
     });
 
-    // Sort Closed Trades: Date Closed (Descending)
+    // 3. Sort Closed Trades: Close Date (Most Recent to Oldest)
     closedTrades.sort((a, b) => {
-        return new Date(b.close_date || 0) - new Date(a.close_date || 0);
+        return new Date(normalizeDate(b.close_date) || 0) - new Date(normalizeDate(a.close_date) || 0);
     });
 
     // --- RENDER OPEN POSITIONS TABLE ---
@@ -676,9 +701,9 @@ function renderJournalTables() {
                 <tr>
                     <td><strong>${t.symbol || '-'}</strong></td>
                     <td>${t.account || 'Regular'}</td>
-                    <td>${t.open_date || '-'}</td>
+                    <td>${normalizeDate(t.open_date)}</td>
                     <td>${t.position_type || 'Shares'}</td>
-                    <td>${t.expiration_date || '-'}</td>
+                    <td>${normalizeDate(t.expiration_date)}</td>
                     <td>${t.strike ? '$' + t.strike : '-'}</td>
                     <td>${markDisplay}</td>
                     <td>${t.qty || 0}</td>
@@ -710,15 +735,15 @@ function renderJournalTables() {
                 <tr>
                     <td><strong>${t.symbol || '-'}</strong></td>
                     <td>${t.account || 'Regular'}</td>
-                    <td>${t.open_date || '-'}</td>
+                    <td>${normalizeDate(t.open_date)}</td>
                     <td>${t.position_type || 'Shares'}</td>
-                    <td>${t.expiration_date || '-'}</td>
+                    <td>${normalizeDate(t.expiration_date)}</td>
                     <td>${t.strike ? '$' + t.strike : '-'}</td>
                     <td>${t.qty || 0}</td>
                     <td>$${parseFloat(t.open_price || 0).toFixed(2)}</td>
                     <td>$${computed.openValue ? computed.openValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
                     <td><span style="font-size: 0.75rem; background: #334155; padding: 2px 6px; border-radius: 4px; text-transform: uppercase;">${t.close_action}</span></td>
-                    <td>${t.close_date || '-'}</td>
+                    <td>${normalizeDate(t.close_date)}</td>
                     <td>${(t.close_price !== null && t.close_price !== undefined && t.close_price !== '') ? '$' + parseFloat(t.close_price).toFixed(2) : '-'}</td>
                     <td>${computed.closeValue !== null ? '$' + computed.closeValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
                     <td>${pnlDisplay}</td>
