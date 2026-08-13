@@ -23,6 +23,7 @@
         .gain { color: #10b981; font-weight: bold; }
         .loss { color: #ef4444; font-weight: bold; }
         .notes-cell { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #94a3b8; font-style: italic; }
+        .section-header { font-size: 1.1rem; color: #38bdf8; margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px; }
     </style>
 </head>
 <body>
@@ -120,10 +121,10 @@
         </div>
     </div>
 
-    <!-- Journal Table -->
+    <!-- OPEN POSITIONS CARD -->
     <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;">
-            <h3 style="margin: 0;">Trade History Log</h3>
+            <h3 class="section-header">🟢 Open Positions <span id="openCount" style="font-size: 0.85rem; color: #94a3b8; font-weight: normal;">(0)</span></h3>
             <button id="refreshMarksBtn" onclick="refreshOpenMarks()" style="width: auto; margin: 0; background: #3b82f6; padding: 6px 14px; font-size: 0.85rem; white-space: nowrap;">
                 🔄 Refresh Open Marks (>5m old)
             </button>
@@ -143,6 +144,34 @@
                         <th>QTY</th>
                         <th>Open Price</th>
                         <th>Open Value</th>
+                        <th>Notes</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="openTableBody">
+                    <!-- Open positions populated dynamically -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- CLOSED POSITIONS CARD -->
+    <div class="card">
+        <h3 class="section-header">🔴 Closed / Realized Positions <span id="closedCount" style="font-size: 0.85rem; color: #94a3b8; font-weight: normal;">(0)</span></h3>
+        
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Stock</th>
+                        <th>Account</th>
+                        <th>Opened</th>
+                        <th>Position</th>
+                        <th>Expiration</th>
+                        <th>Strike</th>
+                        <th>QTY</th>
+                        <th>Open Price</th>
+                        <th>Open Value</th>
                         <th>Status</th>
                         <th>Date Closed</th>
                         <th>Close Price</th>
@@ -153,8 +182,8 @@
                         <th>Actions</th>
                     </tr>
                 </thead>
-                <tbody id="journalTableBody">
-                    <!-- Populated dynamically -->
+                <tbody id="closedTableBody">
+                    <!-- Closed positions populated dynamically -->
                 </tbody>
             </table>
         </div>
@@ -180,7 +209,6 @@ function toggleOptionFields() {
     document.getElementById('strikeContainer').classList.toggle('hidden', !isOption);
 }
 
-// Single Field Live Fetch for Form
 async function autoFetchMarkPrice() {
     const symbol = document.getElementById('symbol').value.trim().toUpperCase();
     const markInput = document.getElementById('markPrice');
@@ -204,7 +232,6 @@ async function autoFetchMarkPrice() {
     }
 }
 
-// 🔄 Staggered Bulk Refresh for Open Positions (>5 min old)
 async function refreshOpenMarks() {
     const btn = document.getElementById('refreshMarksBtn');
     if (!btn) return;
@@ -212,7 +239,6 @@ async function refreshOpenMarks() {
     const originalText = btn.innerText;
     const now = Date.now();
 
-    // Filter only open trades whose mark was updated > 5 min ago (or never)
     const openTradesToRefresh = trades.filter(t => {
         const isOpen = !t.close_action;
         const lastUpdated = t.mark_updated || 0;
@@ -227,7 +253,6 @@ async function refreshOpenMarks() {
     btn.disabled = true;
     btn.style.opacity = '0.7';
 
-    // Get unique ticker symbols to minimize API requests
     const uniqueSymbols = [...new Set(openTradesToRefresh.map(t => t.symbol.toUpperCase().trim()))];
     const priceMap = {};
     let count = 0;
@@ -244,13 +269,11 @@ async function refreshOpenMarks() {
                 priceMap[symbol] = data.c;
             }
 
-            // Stagger API calls by 300ms to stay within rate limits
             if (count < uniqueSymbols.length) await sleep(300);
         }
 
         let updatedCount = 0;
 
-        // Apply new mark prices to matching trades
         for (let t of trades) {
             if (!t.close_action) {
                 const symbolKey = t.symbol.toUpperCase().trim();
@@ -259,7 +282,6 @@ async function refreshOpenMarks() {
                     t.mark_updated = Date.now();
                     updatedCount++;
 
-                    // Sync updated mark to Supabase
                     if (supabaseClient) {
                         await supabaseClient.from('trade_journal')
                             .update({ mark_price: t.mark_price, mark_updated: t.mark_updated })
@@ -270,7 +292,7 @@ async function refreshOpenMarks() {
         }
 
         localStorage.setItem('trade_journal', JSON.stringify(trades));
-        renderJournalTable();
+        renderJournalTables();
         alert(`✅ Refreshed Mark prices for ${updatedCount} open position(s)!`);
 
     } catch (err) {
@@ -283,7 +305,6 @@ async function refreshOpenMarks() {
     }
 }
 
-// Math Calculations
 function calculateValues(t) {
     const isOption = t.position_type !== 'Shares';
     const multiplier = isOption ? 100 : 1;
@@ -327,11 +348,11 @@ async function loadTrades() {
     if (supabaseClient) {
         const { data: { session } } = await supabaseClient.auth.getSession();
         if (session) {
-            const { data, error } = await supabaseClient.from('trade_journal').select('*').order('open_date', { ascending: false });
+            const { data, error } = await supabaseClient.from('trade_journal').select('*');
             if (!error && data) trades = data;
         }
     }
-    renderJournalTable();
+    renderJournalTables();
 }
 
 async function saveTrade() {
@@ -419,79 +440,129 @@ async function deleteTrade(id) {
         await supabaseClient.from('trade_journal').delete().eq('id', id);
     }
     trades = trades.filter(t => t.id !== id);
-    renderJournalTable();
+    renderJournalTables();
 }
 
-function renderJournalTable() {
-    const tbody = document.getElementById('journalTableBody');
-    tbody.innerHTML = '';
+function renderJournalTables() {
+    const openTbody = document.getElementById('openTableBody');
+    const closedTbody = document.getElementById('closedTableBody');
+    
+    openTbody.innerHTML = '';
+    closedTbody.innerHTML = '';
 
-    if (!trades || trades.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="18" style="text-align: center; padding: 20px; color: #64748b;">No trades logged yet.</td></tr>`;
-        return;
+    // 1. Separate Open vs Closed Trades
+    let openTrades = trades.filter(t => !t.close_action);
+    let closedTrades = trades.filter(t => t.close_action);
+
+    document.getElementById('openCount').innerText = `(${openTrades.length})`;
+    document.getElementById('closedCount').innerText = `(${closedTrades.length})`;
+
+    // 2. Sort Open Trades: Alphabetical Symbol (A-Z) -> Open Date (Oldest to Newest)
+    openTrades.sort((a, b) => {
+        const symbolA = (a.symbol || '').toUpperCase();
+        const symbolB = (b.symbol || '').toUpperCase();
+        
+        if (symbolA !== symbolB) {
+            return symbolA.localeCompare(symbolB);
+        }
+        return new Date(a.open_date || 0) - new Date(b.open_date || 0);
+    });
+
+    // 3. Sort Closed Trades: Close Date (Most Recent to Oldest)
+    closedTrades.sort((a, b) => {
+        return new Date(b.close_date || 0) - new Date(a.close_date || 0);
+    });
+
+    // --- RENDER OPEN POSITIONS TABLE ---
+    if (openTrades.length === 0) {
+        openTbody.innerHTML = `<tr><td colspan="12" style="text-align: center; padding: 15px; color: #64748b;">No open positions currently active.</td></tr>`;
+    } else {
+        openTrades.forEach(t => {
+            const computed = calculateValues(t);
+            const safeId = typeof t.id === 'string' ? `'${t.id}'` : t.id;
+
+            let markDisplay = '-';
+            if (t.mark_price !== null && t.mark_price !== undefined && t.mark_price !== '') {
+                const markNum = parseFloat(t.mark_price);
+                const openNum = parseFloat(t.open_price || 0);
+
+                if (openNum > 0) {
+                    let markColor = '#94a3b8';
+                    const isShort = (t.position_type === 'Sell PUTs' || t.position_type === 'Sell CALLs');
+
+                    if (isShort) {
+                        if (markNum < openNum) markColor = '#10b981';
+                        else if (markNum > openNum) markColor = '#ef4444';
+                    } else {
+                        if (markNum > openNum) markColor = '#10b981';
+                        else if (markNum < openNum) markColor = '#ef4444';
+                    }
+                    markDisplay = `<span style="color: ${markColor}; font-weight: bold;">$${markNum.toFixed(2)}</span>`;
+                } else {
+                    markDisplay = `$${markNum.toFixed(2)}`;
+                }
+            }
+
+            openTbody.innerHTML += `
+                <tr>
+                    <td><strong>${t.symbol || '-'}</strong></td>
+                    <td>${t.account || 'Regular'}</td>
+                    <td>${t.open_date || '-'}</td>
+                    <td>${t.position_type || 'Shares'}</td>
+                    <td>${t.expiration_date || '-'}</td>
+                    <td>${t.strike ? '$' + t.strike : '-'}</td>
+                    <td>${markDisplay}</td>
+                    <td>${t.qty || 0}</td>
+                    <td>$${parseFloat(t.open_price || 0).toFixed(2)}</td>
+                    <td>$${computed.openValue ? computed.openValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
+                    <td class="notes-cell" title="${t.notes || ''}">${t.notes || '-'}</td>
+                    <td>
+                        <button style="padding: 2px 8px; width: auto; background: #3b82f6; margin-right: 4px; display: inline-block;" onclick="editTrade(${safeId})">Edit</button>
+                        <button style="padding: 2px 8px; width: auto; background: #ef4444; display: inline-block;" onclick="deleteTrade(${safeId})">✕</button>
+                    </td>
+                </tr>
+            `;
+        });
     }
 
-    trades.forEach(t => {
-        const computed = calculateValues(t);
+    // --- RENDER CLOSED POSITIONS TABLE ---
+    if (closedTrades.length === 0) {
+        closedTbody.innerHTML = `<tr><td colspan="17" style="text-align: center; padding: 15px; color: #64748b;">No closed trades logged yet.</td></tr>`;
+    } else {
+        closedTrades.forEach(t => {
+            const computed = calculateValues(t);
+            const safeId = typeof t.id === 'string' ? `'${t.id}'` : t.id;
 
-        // 🎨 Determine Mark Price Color Coding vs. Open Price
-        let markDisplay = '-';
-        if (t.mark_price !== null && t.mark_price !== undefined && t.mark_price !== '') {
-            const markNum = parseFloat(t.mark_price);
-            const openNum = parseFloat(t.open_price || 0);
+            const pnlDisplay = (computed.profitLoss !== null && computed.profitLoss !== undefined)
+                ? `<span class="${computed.profitLoss >= 0 ? 'gain' : 'loss'}">$${computed.profitLoss.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span>` 
+                : '-';
 
-            if (openNum > 0) {
-                let markColor = '#94a3b8'; // default slate color
-                const isShort = (t.position_type === 'Sell PUTs' || t.position_type === 'Sell CALLs');
-
-                if (isShort) {
-                    // For Short positions: Lower Mark = Gain (Green), Higher Mark = Loss (Red)
-                    if (markNum < openNum) markColor = '#10b981';      // Green
-                    else if (markNum > openNum) markColor = '#ef4444'; // Red
-                } else {
-                    // For Long positions: Higher Mark = Gain (Green), Lower Mark = Loss (Red)
-                    if (markNum > openNum) markColor = '#10b981';      // Green
-                    else if (markNum < openNum) markColor = '#ef4444'; // Red
-                }
-
-                markDisplay = `<span style="color: ${markColor}; font-weight: bold;">$${markNum.toFixed(2)}</span>`;
-            } else {
-                markDisplay = `$${markNum.toFixed(2)}`;
-            }
-        }
-
-        const pnlDisplay = (computed.profitLoss !== null && computed.profitLoss !== undefined)
-            ? `<span class="${computed.profitLoss >= 0 ? 'gain' : 'loss'}">$${computed.profitLoss.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span>` 
-            : '-';
-
-        const safeId = typeof t.id === 'string' ? `'${t.id}'` : t.id;
-
-        tbody.innerHTML += `
-            <tr>
-                <td><strong>${t.symbol || '-'}</strong></td>
-                <td>${t.account || 'Regular'}</td>
-                <td>${t.open_date || '-'}</td>
-                <td>${t.position_type || 'Shares'}</td>
-                <td>${t.expiration_date || '-'}</td>
-                <td>${t.strike ? '$' + t.strike : '-'}</td>
-                <td>${markDisplay}</td>
-                <td>${t.qty || 0}</td>
-                <td>$${parseFloat(t.open_price || 0).toFixed(2)}</td>
-                <td>$${computed.openValue ? computed.openValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
-                <td>${t.close_action || 'Open'}</td>
-                <td>${t.close_date || '-'}</td>
-                <td>${(t.close_price !== null && t.close_price !== undefined && t.close_price !== '') ? '$' + parseFloat(t.close_price).toFixed(2) : '-'}</td>
-                <td>${computed.closeValue !== null ? '$' + computed.closeValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
-                <td>${pnlDisplay}</td>
-                <td>${computed.daysHeld !== null ? computed.daysHeld + ' d' : '-'}</td>
-                <td class="notes-cell" title="${t.notes || ''}">${t.notes || '-'}</td>
-                <td>
-                    <button style="padding: 2px 8px; width: auto; background: #3b82f6; margin-right: 4px; display: inline-block;" onclick="editTrade(${safeId})">Edit</button>
-                    <button style="padding: 2px 8px; width: auto; background: #ef4444; display: inline-block;" onclick="deleteTrade(${safeId})">✕</button>
-                </td>
-            </tr>
-        `;
-    });
+            closedTbody.innerHTML += `
+                <tr>
+                    <td><strong>${t.symbol || '-'}</strong></td>
+                    <td>${t.account || 'Regular'}</td>
+                    <td>${t.open_date || '-'}</td>
+                    <td>${t.position_type || 'Shares'}</td>
+                    <td>${t.expiration_date || '-'}</td>
+                    <td>${t.strike ? '$' + t.strike : '-'}</td>
+                    <td>${t.qty || 0}</td>
+                    <td>$${parseFloat(t.open_price || 0).toFixed(2)}</td>
+                    <td>$${computed.openValue ? computed.openValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
+                    <td><span style="font-size: 0.75rem; background: #334155; padding: 2px 6px; border-radius: 4px; text-transform: uppercase;">${t.close_action}</span></td>
+                    <td>${t.close_date || '-'}</td>
+                    <td>${(t.close_price !== null && t.close_price !== undefined && t.close_price !== '') ? '$' + parseFloat(t.close_price).toFixed(2) : '-'}</td>
+                    <td>${computed.closeValue !== null ? '$' + computed.closeValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
+                    <td>${pnlDisplay}</td>
+                    <td>${computed.daysHeld !== null ? computed.daysHeld + ' d' : '-'}</td>
+                    <td class="notes-cell" title="${t.notes || ''}">${t.notes || '-'}</td>
+                    <td>
+                        <button style="padding: 2px 8px; width: auto; background: #3b82f6; margin-right: 4px; display: inline-block;" onclick="editTrade(${safeId})">Edit</button>
+                        <button style="padding: 2px 8px; width: auto; background: #ef4444; display: inline-block;" onclick="deleteTrade(${safeId})">✕</button>
+                    </td>
+                </tr>
+            `;
+        });
+    }
 }
 
 function resetForm() {
