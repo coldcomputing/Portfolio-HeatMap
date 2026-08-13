@@ -434,6 +434,32 @@ function renderJournalTable() {
     trades.forEach(t => {
         const computed = calculateValues(t);
 
+        // 🎨 Determine Mark Price Color Coding vs. Open Price
+        let markDisplay = '-';
+        if (t.mark_price !== null && t.mark_price !== undefined && t.mark_price !== '') {
+            const markNum = parseFloat(t.mark_price);
+            const openNum = parseFloat(t.open_price || 0);
+
+            if (openNum > 0) {
+                let markColor = '#94a3b8'; // default slate color
+                const isShort = (t.position_type === 'Sell PUTs' || t.position_type === 'Sell CALLs');
+
+                if (isShort) {
+                    // For Short positions: Lower Mark = Gain (Green), Higher Mark = Loss (Red)
+                    if (markNum < openNum) markColor = '#10b981';      // Green
+                    else if (markNum > openNum) markColor = '#ef4444'; // Red
+                } else {
+                    // For Long positions: Higher Mark = Gain (Green), Lower Mark = Loss (Red)
+                    if (markNum > openNum) markColor = '#10b981';      // Green
+                    else if (markNum < openNum) markColor = '#ef4444'; // Red
+                }
+
+                markDisplay = `<span style="color: ${markColor}; font-weight: bold;">$${markNum.toFixed(2)}</span>`;
+            } else {
+                markDisplay = `$${markNum.toFixed(2)}`;
+            }
+        }
+
         const pnlDisplay = (computed.profitLoss !== null && computed.profitLoss !== undefined)
             ? `<span class="${computed.profitLoss >= 0 ? 'gain' : 'loss'}">$${computed.profitLoss.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span>` 
             : '-';
@@ -448,7 +474,7 @@ function renderJournalTable() {
                 <td>${t.position_type || 'Shares'}</td>
                 <td>${t.expiration_date || '-'}</td>
                 <td>${t.strike ? '$' + t.strike : '-'}</td>
-                <td>${t.mark_price ? '$' + parseFloat(t.mark_price).toFixed(2) : '-'}</td>
+                <td>${markDisplay}</td>
                 <td>${t.qty || 0}</td>
                 <td>$${parseFloat(t.open_price || 0).toFixed(2)}</td>
                 <td>$${computed.openValue ? computed.openValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'}</td>
