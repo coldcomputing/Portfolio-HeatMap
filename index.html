@@ -10,7 +10,7 @@
     <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background: #0f172a; color: #f8fafc; }
-        .container { max-width: 1350px; margin: 0 auto; }
+        .container { max-width: 1400px; margin: 0 auto; }
         .card { background: #1e293b; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #334155; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 15px; }
         label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 4px; }
@@ -146,7 +146,6 @@ let currentUser = null;
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- AUTH & DATA LOADING ---
 async function checkUserSession() {
     if (!supabaseClient) return;
     try {
@@ -224,11 +223,11 @@ async function loadAllDataFromSupabase() {
     }
 }
 
-// --- CORE AGGREGATION LOGIC ---
+// --- AGGREGATION ENGINE ---
 function recalculateAggregatedHoldings() {
     aggregatedHoldings = [];
 
-    // 1. Add Cash & Retirement Lump Sum Entries
+    // 1. Cash & Retirement Lump Sum Entries
     lumpSumHoldings.forEach(h => {
         aggregatedHoldings.push({
             id: h.id,
@@ -247,26 +246,28 @@ function recalculateAggregatedHoldings() {
         });
     });
 
-    // 2. Filter ONLY Open Trades from Journal
+    // 2. Open Trades from Journal
     const openTrades = journalTrades.filter(t => !t.close_action);
 
-    // Group Open Trades by Account Name + Symbol
     const tradeGroups = openTrades.reduce((acc, t) => {
-        const key = `${t.account || 'Regular'}_${t.symbol.toUpperCase().trim()}`;
+        const key = `${t.account || 'Regular'}_${t.symbol.toUpperCase().trim()}_${t.position_type}`;
         if (!acc[key]) acc[key] = [];
         acc[key].push(t);
         return acc;
     }, {});
 
-    // Aggregate Trades into Single Position Entries
     Object.keys(tradeGroups).forEach(key => {
         const group = tradeGroups[key];
         const symbol = group[0].symbol.toUpperCase().trim();
         const account = group[0].account || 'Regular';
         const positionType = group[0].position_type;
+        
         const isOption = positionType !== 'Shares';
         const isShort = positionType === 'Sell PUTs' || positionType === 'Sell CALLs';
-        const type = isOption ? 'crypto' : 'stock';
+        
+        // 🛠️ FIX 1: Options are assigned 'stock' type (never crypto)
+        const type = 'stock';
+        const multiplier = isOption ? 100 : 1;
 
         let totalQty = 0;
         let totalCostBasis = 0;
@@ -275,7 +276,6 @@ function recalculateAggregatedHoldings() {
         group.forEach(t => {
             const qty = parseFloat(t.qty) || 0;
             const openPrice = parseFloat(t.open_price) || 0;
-            const multiplier = isOption ? 100 : 1;
 
             totalQty += qty;
             totalCostBasis += (qty * openPrice * multiplier);
@@ -285,18 +285,19 @@ function recalculateAggregatedHoldings() {
             }
         });
 
-        const multiplier = isOption ? 100 : 1;
         const avgOpenPrice = totalQty > 0 ? (totalCostBasis / (totalQty * multiplier)) : 0;
+        
+        // Market price is per share/contract unit
         const marketUnitPrice = latestMark > 0 ? latestMark : avgOpenPrice;
         
+        // 🛠️ FIX 2: Total Value uses the 100x multiplier for options
         const totalVal = totalQty * marketUnitPrice * multiplier;
 
-        // Calculate Profit/Loss ($ and %)
         let pnlDollars = 0;
         if (isShort) {
-            pnlDollars = totalCostBasis - totalVal; // Credit received minus current buyback cost
+            pnlDollars = totalCostBasis - totalVal;
         } else {
-            pnlDollars = totalVal - totalCostBasis; // Current market value minus cost basis
+            pnlDollars = totalVal - totalCostBasis;
         }
 
         const pnlPercent = totalCostBasis > 0 ? ((pnlDollars / totalCostBasis) * 100) : 0;
@@ -314,6 +315,7 @@ function recalculateAggregatedHoldings() {
             totalVal: totalVal,
             pnlDollars: pnlDollars,
             pnlPercent: pnlPercent,
+            isOption: isOption,
             isLumpSum: false
         });
     });
@@ -322,7 +324,6 @@ function recalculateAggregatedHoldings() {
     renderHeatmap();
 }
 
-// --- PRICE REFRESH (FINNHUB API) ---
 async function manualPriceRefresh() {
     const btn = document.getElementById('refreshPricesBtn');
     if (!btn) return;
@@ -336,7 +337,7 @@ async function manualPriceRefresh() {
         const uniqueSymbols = [...new Set(openTrades.map(t => t.symbol.toUpperCase().trim()))];
 
         if (uniqueSymbols.length === 0) {
-            alert('No open stock or crypto positions to update.');
+            alert('No open positions to update.');
             return;
         }
 
@@ -380,7 +381,6 @@ async function manualPriceRefresh() {
     }
 }
 
-// --- ACCORDION TABLE RENDER ---
 function toggleAccountGroup(groupId) {
     const rows = document.querySelectorAll(`.${groupId}`);
     const icon = document.getElementById(`icon-${groupId}`);
@@ -441,7 +441,6 @@ function renderTable() {
         return;
     }
 
-    // Group by Account Name
     const grouped = aggregatedHoldings.reduce((acc, h) => {
         const account = h.account || 'Uncategorized Account';
         if (!acc[account]) acc[account] = [];
@@ -449,7 +448,6 @@ function renderTable() {
         return acc;
     }, {});
 
-    // Sort Account Groups by Total Value (Descending)
     const sortedAccountNames = Object.keys(grouped).sort((a, b) => {
         const totalA = grouped[a].reduce((sum, h) => sum + (h.totalVal || 0), 0);
         const totalB = grouped[b].reduce((sum, h) => sum + (h.totalVal || 0), 0);
@@ -461,7 +459,6 @@ function renderTable() {
         const accountTotal = groupHoldings.reduce((sum, h) => sum + (h.totalVal || 0), 0);
         const groupId = `account-group-${index}`;
 
-        // Parent Header Row
         const parentTr = document.createElement('tr');
         parentTr.className = 'account-parent-row';
         parentTr.style.background = '#1e293b';
@@ -486,7 +483,6 @@ function renderTable() {
         `;
         tbody.appendChild(parentTr);
 
-        // Child Rows
         groupHoldings.forEach(h => {
             const childTr = document.createElement('tr');
             childTr.className = `holding-child-row ${groupId}`;
@@ -498,7 +494,6 @@ function renderTable() {
             const avgOpenDisplay = h.avgOpenPrice ? `$${h.avgOpenPrice.toFixed(2)}` : '-';
             const marketPriceDisplay = h.marketPrice ? `$${h.marketPrice.toFixed(2)}` : '-';
 
-            // 1. P/L ($) Formatting (Green if >= 0, Red if < 0)
             let pnlDollarsDisplay = '-';
             if (!h.isLumpSum) {
                 const color = h.pnlDollars >= 0 ? '#10b981' : '#ef4444';
@@ -506,31 +501,20 @@ function renderTable() {
                 pnlDollarsDisplay = `<span style="color: ${color}; font-weight: bold;">${sign}$${h.pnlDollars.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`;
             }
 
-            // 2. P/L (%) Tiered Formatting
-            // - Green: >= +10%
-            // - Yellow: >= 0% and < +10%
-            // - Orange: <= 0% and >= -10%
-            // - Red: < -10%
             let pnlPercentDisplay = '-';
             if (!h.isLumpSum) {
-                let color = '#ef4444'; // Red default (< -10%)
+                let color = '#ef4444';
                 const pct = h.pnlPercent;
 
-                if (pct >= 10) {
-                    color = '#10b981'; // Green (>= +10%)
-                } else if (pct >= 0) {
-                    color = '#eab308'; // Yellow (0% to 10%)
-                } else if (pct >= -10) {
-                    color = '#f97316'; // Orange (-10% to 0%)
-                } else {
-                    color = '#ef4444'; // Red (< -10%)
-                }
+                if (pct >= 10) color = '#10b981';
+                else if (pct >= 0) color = '#eab308';
+                else if (pct >= -10) color = '#f97316';
+                else color = '#ef4444';
 
                 const sign = pct >= 0 ? '+' : '';
                 pnlPercentDisplay = `<span style="color: ${color}; font-weight: bold;">${sign}${pct.toFixed(2)}%</span>`;
             }
 
-            // 3. Account Weight calculation (relative ONLY to this account group)
             const accountWeight = accountTotal > 0 ? ((h.totalVal / accountTotal) * 100).toFixed(1) : '0.0';
 
             const actionButtons = h.isLumpSum 
@@ -557,7 +541,6 @@ function renderTable() {
     });
 }
 
-// --- FORM HANDLING FOR LUMP SUM ENTRIES ---
 async function handleFormSubmit() {
     const type = document.getElementById('accountType').value;
     const name = document.getElementById('accountName').value.trim() || 'Unnamed Entry';
@@ -623,7 +606,6 @@ async function removeLumpSum(id) {
     recalculateAggregatedHoldings();
 }
 
-// --- HEATMAP RENDER ---
 function renderHeatmap() {
     const summaryDiv = document.getElementById('portfolioSummary');
     if (aggregatedHoldings.length === 0) {
@@ -712,10 +694,10 @@ function renderHeatmap() {
         const holding = aggregatedHoldings.find(h => label.includes(h.name));
         const pct = holding ? (holding.pnlPercent || 0) : 0;
 
-        if (pct >= 10) return '#10b981'; // Green
-        if (pct >= 0) return '#eab308';  // Yellow
-        if (pct >= -10) return '#f97316';// Orange
-        return '#ef4444';                // Red
+        if (pct >= 10) return '#10b981'; 
+        if (pct >= 0) return '#eab308';  
+        if (pct >= -10) return '#f97316';
+        return '#ef4444';                
     });
 
     const data = [{
@@ -738,7 +720,6 @@ function renderHeatmap() {
     Plotly.newPlot('heatmap', data, layout);
 }
 
-// Startup
 checkUserSession();
 </script>
 
