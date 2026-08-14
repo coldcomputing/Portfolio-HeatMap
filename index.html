@@ -101,9 +101,6 @@
             <h3 style="margin: 0;">Holdings Summary</h3>
             <div style="display: flex; gap: 8px; width: auto; align-items: center;">
                 <input type="text" id="holdingSearchInput" onkeyup="filterHoldingsTable()" placeholder="🔍 Search holdings or accounts..." style="width: 220px; margin: 0; padding: 6px 12px; font-size: 0.85rem; border: 1px solid #334155; border-radius: 6px; background: #0f172a; color: #fff;">
-                <button id="refreshPricesBtn" onclick="manualPriceRefresh()" style="width: auto; margin: 0; background: #3b82f6; padding: 6px 14px; font-size: 0.85rem; white-space: nowrap;">
-                    🔄 Update Stock Prices
-                </button>
             </div>
         </div>
 
@@ -672,52 +669,59 @@ function renderHeatmap() {
     const categories = [];
     const categoryParents = [];
     const categoryValues = [];
+    const categoryColors = [];
 
-    if (stockTotal > 0) { categories.push('Stock Accounts'); categoryParents.push('Total Portfolio'); categoryValues.push(stockTotal); }
-    if (cryptoTotal > 0) { categories.push('Crypto Accounts'); categoryParents.push('Total Portfolio'); categoryValues.push(cryptoTotal); }
-    if (retirementTotal > 0) { categories.push('Retirement Accounts'); categoryParents.push('Total Portfolio'); categoryValues.push(retirementTotal); }
-    if (cashTotal > 0) { categories.push('Cash Accounts'); categoryParents.push('Total Portfolio'); categoryValues.push(cashTotal); }
+    if (stockTotal > 0) { categories.push('Stock Accounts'); categoryParents.push('Total Portfolio'); categoryValues.push(stockTotal); categoryColors.push('#1e293b'); }
+    if (cryptoTotal > 0) { categories.push('Crypto Accounts'); categoryParents.push('Total Portfolio'); categoryValues.push(cryptoTotal); categoryColors.push('#8b5cf6'); }
+    if (retirementTotal > 0) { categories.push('Retirement Accounts'); categoryParents.push('Total Portfolio'); categoryValues.push(retirementTotal); categoryColors.push('#475569'); }
+    if (cashTotal > 0) { categories.push('Cash Accounts'); categoryParents.push('Total Portfolio'); categoryValues.push(cashTotal); categoryColors.push('#f59e0b'); }
 
-    const itemLabels = aggregatedHoldings.map(h => {
+    const itemLabels = [];
+    const itemParents = [];
+    const itemValues = [];
+    const itemColors = [];
+
+    aggregatedHoldings.forEach(h => {
+        const accountTag = h.account ? `[${h.account}] ` : '';
+        
+        // Build Unique Label (Account Tag + Position Name + PnL %)
         if (h.isOption) {
-            return `${h.name}`;
-        }
-        if (h.type === 'stock' || h.type === 'crypto') {
+            itemLabels.push(`${accountTag}${h.name}`);
+        } else if (h.type === 'stock' || h.type === 'crypto') {
             const pct = h.pnlPercent || 0;
             const sign = pct >= 0 ? '+' : '';
-            return `${h.name}<br>${sign}${pct.toFixed(2)}%`;
+            itemLabels.push(`${accountTag}${h.name}<br>${sign}${pct.toFixed(2)}%`);
+        } else {
+            itemLabels.push(`${h.name}`);
         }
-        return h.name;
-    });
 
-    const itemParents = aggregatedHoldings.map(h => {
-        if (h.type === 'stock') return 'Stock Accounts';
-        if (h.type === 'crypto') return 'Crypto Accounts';
-        if (h.type === 'retirement') return 'Retirement Accounts';
-        return 'Cash Accounts';
+        // Parent Category
+        if (h.type === 'stock') itemParents.push('Stock Accounts');
+        else if (h.type === 'crypto') itemParents.push('Crypto Accounts');
+        else if (h.type === 'retirement') itemParents.push('Retirement Accounts');
+        else itemParents.push('Cash Accounts');
+
+        // Total Dollar Value
+        itemValues.push(h.totalVal || 0);
+
+        // Colors
+        if (h.isOption) {
+            itemColors.push('#334155');
+        } else if (h.isLumpSum) {
+            itemColors.push(h.type === 'cash' ? '#f59e0b' : '#475569');
+        } else {
+            const pct = h.pnlPercent || 0;
+            if (pct >= 10) itemColors.push('#10b981');
+            else if (pct >= 0) itemColors.push('#eab308');
+            else if (pct >= -10) itemColors.push('#f97316');
+            else itemColors.push('#ef4444');
+        }
     });
-    
-    const itemValues = aggregatedHoldings.map(h => (h.totalVal || 0));
 
     const allLabels = ['Total Portfolio', ...categories, ...itemLabels];
     const allParents = ['', ...categoryParents, ...itemParents];
     const allValues = [portfolioTotal, ...categoryValues, ...itemValues];
-
-    const customColors = allLabels.map((label, idx) => {
-        const parent = allParents[idx];
-        if (parent === '' || parent === 'Total Portfolio') return '#1e293b';
-        if (parent === 'Cash Accounts') return '#f59e0b';
-        if (parent === 'Retirement Accounts') return '#475569';
-
-        const holding = aggregatedHoldings.find(h => label.includes(h.name));
-        if (!holding || holding.isOption) return '#334155'; // Neutral blue-gray for option positions
-
-        const pct = holding.pnlPercent || 0;
-        if (pct >= 10) return '#10b981'; 
-        if (pct >= 0) return '#eab308';  
-        if (pct >= -10) return '#f97316';
-        return '#ef4444';                
-    });
+    const customColors = ['#1e293b', ...categoryColors, ...itemColors];
 
     const data = [{
         type: 'treemap',
